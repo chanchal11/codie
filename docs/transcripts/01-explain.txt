@@ -1,0 +1,15 @@
+provider: bedrock
+model: apac.amazon.nova-pro-v1:0
+workspace: copy of sample_project
+prompt: What does this project do?
+------------------------------------------------------------
+-> list_files(".")
+<- 4 entries
+-> read_file("bill_splitter.py")
+<- 9 lines
+-> read_file("test_bill_splitter.py")
+<- 22 lines
+The project calculates the amount each person should pay when splitting a restaurant bill, including a tip. The `split_bill` function takes the total bill amount, the number of people, and an optional tip percentage. It returns the amount each person should pay, including the tip. The project also includes tests to verify the correctness of the `split_bill` function.
+------------------------------------------------------------
+verifier:
+bill_splitter.py unchanged: True
