@@ -113,16 +113,56 @@ class CommandPlan:
     """How to scrub stdout: ``none``, ``listing``, or ``grep``."""
 
 
+def _has_unquoted_shell_meta(text: str) -> bool:
+    """True when a shell operator appears outside quotes.
+
+    The command is never passed to a shell. ``&`` inside a quoted URL is one
+    argument. ``ls && rm`` is still an operator, because those ``&`` characters
+    are not quoted. Escapes follow ``shlex`` so the scan and the argv split agree.
+    """
+    if "\n" in text or "\r" in text or "\x00" in text:
+        return True
+    i = 0
+    limit = len(text)
+    while i < limit:
+        char = text[i]
+        if char == "'":
+            i += 1
+            while i < limit and text[i] != "'":
+                i += 1
+            i += 1
+            continue
+        if char == '"':
+            i += 1
+            while i < limit:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if char == "\\":
+            i += 2
+            continue
+        if char in _SHELL_META:
+            return True
+        i += 1
+    return False
+
+
 def plan_command(workspace: Path, command: str) -> CommandPlan | str:
     """Validate a command string. Returns a plan, or an error string.
 
-    The command is never passed to a shell. Metacharacters are rejected before
-    ``shlex`` splits the string into an argv list.
+    The command is never passed to a shell. Unquoted metacharacters are
+    rejected before ``shlex`` splits the string into an argv list. The same
+    characters inside quotes are argument text.
     """
     if command is None or str(command).strip() == "":
         return "error: empty command"
     text = str(command)
-    if any(char in text for char in _SHELL_META) or "\n" in text or "\r" in text or "\x00" in text:
+    if _has_unquoted_shell_meta(text):
         return "error: shell metacharacters are not allowed"
     try:
         argv = shlex.split(text, posix=True)
@@ -155,7 +195,7 @@ def plan_command(workspace: Path, command: str) -> CommandPlan | str:
 def command_program(command: str) -> str | None:
     """Bare program name from a command string, or None when it is not one."""
     text = "" if command is None else str(command)
-    if any(char in text for char in _SHELL_META) or "\n" in text or "\r" in text or "\x00" in text:
+    if _has_unquoted_shell_meta(text):
         return None
     try:
         argv = shlex.split(text, posix=True)

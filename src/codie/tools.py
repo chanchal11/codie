@@ -88,7 +88,11 @@ class EditFileArgs(BaseModel):
 class RunCommandArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str = Field(
-        description="One command with no shell syntax. Free commands run immediately. Other bare programs wait for the user."
+        description=(
+            "One command with no shell syntax. Quote an argument that contains "
+            "& | ; > < ` or $, such as a URL query string. Free commands run immediately. "
+            "Other bare programs wait for the user."
+        )
     )
 
 
@@ -441,7 +445,8 @@ class ToolContext:
             ("edit_file", "Replace one exact snippet in a file. A human approves the diff first.", EditFileArgs, self.edit_file),
             (
                 "run_command",
-                "Run one command with no shell. Free: ls cat head tail wc grep find pwd. "
+                "Run one command with no shell. Quote arguments that contain & | ; > < ` or $, "
+                "such as a URL query string. Free: ls cat head tail wc grep find pwd. "
                 "pytest and any other bare program wait for the user. A blocked program must not be retried.",
                 RunCommandArgs,
                 self.run_command,

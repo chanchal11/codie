@@ -38,7 +38,7 @@ Codie stores config, MCP servers, conversations, workspace guidelines, and alway
 
 - Paths are resolved, then required to stay inside the workspace. Absolute paths and `..` escapes are refused. Symlinks that point outside are refused.
 - `.env`, `.ssh`, `.aws`, `.git`, `id_rsa`, `*.pem`, and `*.key` are never read, listed, or grepped.
-- Commands run as an argv list with `shell=False`. `| ; & > <` `` ` `` `$` are rejected before anything is spawned.
+- Commands run as an argv list with `shell=False`. Unquoted `| ; & > <` `` ` `` `$` and newlines are rejected before anything is spawned. The same characters inside quotes are argument text.
 - `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `find`, and `pwd` run freely. `find -exec`, `-ok`, and `-delete` do not. `pytest` runs only after you approve, unless this workspace always-allows pytest. Any other bare program asks you to allow it once, deny it, or block that program name for this workspace. A blocked program is refused later with no prompt.
 - Plan mode cannot write, edit, run commands, or call MCP. The check is in code, not only in the prompt.
 - Writes, edits, pytest, MCP calls, mode switches into agent, and saved guidelines show the change and ask `Allow? [y/N]`. `a` remembers that exact file, `pytest`, or that MCP tool for this workspace only. An off-list command asks `Allow? [y/N/b]`. `b` blocks that program name. A no goes back to the model as `error: user denied this action`. An always-allow rule never bypasses a guard.

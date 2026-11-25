@@ -115,6 +115,32 @@ def test_pytest_needs_approval_and_ls_does_not(tmp_path: Path):
     assert ls_plan.argv == ["ls"]
 
 
+def test_quoted_query_string_is_one_argument(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    command = (
+        "curl -X GET 'https://api.open-meteo.com/v1/forecast"
+        "?current_weather=true&latitude=22.65&longitude=88.35'"
+    )
+    plan = plan_command(workspace, command)
+    assert not isinstance(plan, str), plan
+    assert plan.argv[:3] == ["curl", "-X", "GET"]
+    assert plan.argv[3].startswith("https://api.open-meteo.com/")
+    assert "&latitude=" in plan.argv[3]
+    assert plan.needs_approval is True
+    double = plan_command(workspace, 'grep -n "a|b" notes.md')
+    assert not isinstance(double, str), double
+    assert "a|b" in double.argv
+
+
+def test_unclosed_quote_is_a_parse_error(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    result = plan_command(workspace, "curl 'https://example.com?a=1&b=2")
+    assert isinstance(result, str)
+    assert result.startswith("error: could not parse command")
+
+
 def test_grep_injects_secret_excludes(tmp_path: Path):
     workspace = tmp_path / "ws"
     (workspace / "notes.md").parent.mkdir()

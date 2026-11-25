@@ -74,6 +74,8 @@ def _tool_text(mode: str) -> str:
                 "- write_file(path, content): replace a file with its full new text, including every function and test that is already there. "
                 "Use this for a new file or a rewrite. Never write an empty file or a placeholder. A human approves the diff before it is written.",
                 "- run_command(command): one command and no shell. Free commands: ls, cat, head, tail, wc, grep, find, pwd. "
+                "Quote an argument that contains & | ; > < ` or $, such as a URL query string. "
+                "Unquoted operators are rejected. "
                 "To run the tests, call this tool with pytest -q. That call is the approval request. Do not ask for permission in your message. "
                 "Any other bare program is still requested with this tool. The user then allows it once, denies it, or blocks that program. "
                 "Do not refuse a command only because it is not in the free list. "
