@@ -43,7 +43,7 @@ The human can switch with `/mode` at any time. The model can call `switch_mode`.
 
 ## Web search and MCP
 
-`web_search` calls the provider named in `config.json`. SearXNG, Tavily, and the OpenAI Responses `web_search` tool are implemented. Exa, Firecrawl, and Brave are named slots the TUI does not offer until a backend is registered. With no provider selected, DuckDuckGo is the fallback.
+`web_search` calls the provider named in `config.json`. The default is `ddgs` (DuckDuckGo), which needs no API key. SearXNG, Tavily, and the OpenAI Responses `web_search` tool are implemented. Exa, Firecrawl, and Brave are named slots the TUI does not offer until a backend is registered. A blank `search_provider` from an older config still means `ddgs`.
 
 MCP servers are stdio only. Their tools are registered as `mcp_<server>_<tool>`, hidden in plan mode, and approved like a write unless an always-allow rule names that server and tool.
 

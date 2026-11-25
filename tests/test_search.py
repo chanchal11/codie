@@ -21,6 +21,9 @@ class _Body:
 
 
 def test_unset_provider_is_ddgs():
+    from codie.store import load_config
+
+    assert load_config()["search_provider"] == "ddgs"
     assert active_provider() == "ddgs"
 
 

@@ -26,7 +26,7 @@ The last command is a one-off. Omit the question and the Textual app opens: save
 
 Bedrock needs `AWS_REGION`, `BEDROCK_MODEL_ID`, and normal AWS credentials in `.env`. The TUI can switch to it mid-conversation without dropping the thread.
 
-Web search uses DuckDuckGo until you pick another provider. SearXNG needs `SEARXNG_URL` or a URL saved from `/search`. Tavily needs `TAVILY_API_KEY`. OpenAI web search needs `OPENAI_API_KEY` and is separate from the chat model, so it works while the agent itself is on Ollama. Exa, Firecrawl, and Brave are reserved names and are not selectable yet.
+Web search uses ddgs (DuckDuckGo) by default. It needs no API key. SearXNG needs `SEARXNG_URL` or a URL saved from `/search`. Tavily needs `TAVILY_API_KEY`. OpenAI web search needs `OPENAI_API_KEY` and is separate from the chat model, so it works while the agent itself is on Ollama. Exa, Firecrawl, and Brave are reserved names and are not selectable yet.
 
 Codie stores config, MCP servers, conversations, workspace guidelines, and always-allow rules in `~/.codie` (`/home/<you>/.codie`). The theme you pick with `/theme` or the Theme chip is written to `config.json` in that directory and restored the next time the TUI opens. Skills stay in the workspace itself: `.codie/skills/<name>/SKILL.md`, with a name and description in the file. Opening another folder does not reuse them. `AGENTS.md` in the workspace is read as project instructions. API keys stay in `.env`. The agent cannot edit `~/.codie`.
 

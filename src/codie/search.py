@@ -90,7 +90,7 @@ def format_hits(hits: list[SearchHit]) -> str:
 
 
 class DdgsBackend:
-    """Fallback used only when no other provider is selected."""
+    """Default web search. DuckDuckGo via ddgs, with no API key."""
 
     def search(self, query: str) -> str:
         rows = None

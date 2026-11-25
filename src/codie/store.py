@@ -15,7 +15,7 @@ MAX_GUIDELINES = 40
 DEFAULT_THEME = "textual-dark"
 
 DEFAULT_CONFIG: dict = {
-    "search_provider": "",
+    "search_provider": "ddgs",
     "searxng_url": "http://127.0.0.1:8080",
     "openai_search_model": "gpt-4.1-mini",
     "last_mode": "agent",
@@ -103,7 +103,9 @@ def load_config() -> dict:
     if merged.get("last_mode") not in {"agent", "plan"}:
         merged["last_mode"] = "agent"
     provider = merged.get("search_provider")
-    merged["search_provider"] = provider.strip().lower() if isinstance(provider, str) else ""
+    name = provider.strip().lower() if isinstance(provider, str) else ""
+    # A blank value is the old "unset" marker. ddgs needs no API key, so it is the default.
+    merged["search_provider"] = name or "ddgs"
     merged["theme"] = clean_theme(merged.get("theme"))
     return merged
 

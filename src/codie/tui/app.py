@@ -588,7 +588,7 @@ class CodieApp(App):
         if provider not in AVAILABLE_PROVIDERS:
             self.write_chat("error: search provider must be ddgs, searxng, tavily, or openai")
             return
-        payload: dict = {"search_provider": "" if provider == "ddgs" else provider}
+        payload: dict = {"search_provider": provider}
         if provider == "searxng" and url is not None and url.strip():
             payload["searxng_url"] = url.strip()
         save_config(payload)

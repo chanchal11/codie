@@ -228,6 +228,8 @@ class SearchModal(ModalScreen[tuple[str, str] | None]):
         labels = []
         for name in AVAILABLE_PROVIDERS:
             mark = "  current" if name == self.current else ""
+            if name == "ddgs":
+                mark = f"{mark}  default, no API key"
             labels.append(f"{name}{mark}")
         later = ", ".join(LATER_PROVIDERS)
         with Vertical(id="dialog"):
