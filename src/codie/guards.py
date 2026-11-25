@@ -132,7 +132,7 @@ def plan_command(workspace: Path, command: str) -> CommandPlan | str:
         return "error: empty command"
     program = argv[0]
     if "/" in program or "\\" in program or program.startswith("."):
-        return "error: command must be a bare name on the allow-list"
+        return "error: command must be a bare program name"
     if program == "find" and any(arg in _FIND_BLOCKED for arg in argv[1:]):
         return "error: find -exec, -ok, and -delete are not allowed"
     for arg in argv[1:]:
@@ -141,10 +141,8 @@ def plan_command(workspace: Path, command: str) -> CommandPlan | str:
         problem = _check_command_arg(workspace, arg)
         if problem:
             return problem
-    if program == "pytest":
+    if program == "pytest" or program not in _ALLOWED:
         return CommandPlan(argv=argv, needs_approval=True, scrub="none")
-    if program not in _ALLOWED:
-        return f"error: '{program}' is not on the allow-list"
     scrub = "none"
     if program == "grep":
         argv = [argv[0], *GREP_EXCLUDES, *argv[1:]]
@@ -152,6 +150,23 @@ def plan_command(workspace: Path, command: str) -> CommandPlan | str:
     elif program in {"ls", "find"}:
         scrub = "listing"
     return CommandPlan(argv=argv, needs_approval=False, scrub=scrub)
+
+
+def command_program(command: str) -> str | None:
+    """Bare program name from a command string, or None when it is not one."""
+    text = "" if command is None else str(command)
+    if any(char in text for char in _SHELL_META) or "\n" in text or "\r" in text or "\x00" in text:
+        return None
+    try:
+        argv = shlex.split(text, posix=True)
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    program = argv[0]
+    if not program or "/" in program or "\\" in program or program.startswith("."):
+        return None
+    return program
 
 
 def _check_command_arg(workspace: Path, arg: str) -> str | None:

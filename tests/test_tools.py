@@ -235,6 +235,62 @@ def test_allowed_write_replaces_the_file(workspace: Path):
     assert "\x1b[" not in result
 
 
+def test_off_list_command_runs_only_when_allowed(workspace: Path, monkeypatch):
+    calls: list = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+
+        class Result:
+            returncode = 0
+            stdout = "hello\n"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    denied = ToolContext(workspace, DenyAll())
+    assert denied.run_command("echo hello") == "error: user denied this action"
+    assert calls == []
+    allowed = ToolContext(workspace, AllowAll())
+    result = allowed.run_command("echo hello")
+    assert calls == [["echo", "hello"]]
+    assert "hello" in result
+    assert result.startswith("exit code 0")
+
+
+def test_blocked_program_skips_the_prompt(workspace: Path, monkeypatch):
+    from codie.permissions import PermissionSet
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("subprocess should not run")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    permissions = PermissionSet.load(workspace)
+    assert permissions.block(workspace, "git status").startswith("error:")
+    saved = permissions.block(workspace, "echo")
+    assert saved == "echo"
+    kept = permissions.add(workspace, "run_command", "pytest", "pytest")
+    assert not isinstance(kept, str)
+    asked: list = []
+
+    class Recording:
+        def ask(self, request):
+            asked.append(request)
+            return True
+
+    tools = ToolContext(workspace, Recording())
+    result = tools.run_command("echo hello")
+    assert result == "error: 'echo' is blocked for this workspace"
+    assert asked == []
+    loaded = PermissionSet.load(workspace)
+    assert loaded.is_blocked("echo") is True
+    assert loaded.allows("run_command", "pytest") is True
+    assert loaded.unblock(workspace, "echo") is True
+    assert PermissionSet.load(workspace).is_blocked("echo") is False
+    assert PermissionSet.load(workspace).allows("run_command", "pytest") is True
+
+
 def test_pytest_denial_does_not_spawn(workspace: Path, monkeypatch):
     def boom(*_args, **_kwargs):
         raise AssertionError("subprocess should not run")

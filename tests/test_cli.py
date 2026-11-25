@@ -33,6 +33,23 @@ def test_cli_approver_defaults_to_no(capsys):
     assert "\x1b[" not in output
 
 
+def test_cli_approver_blocks_a_program(tmp_path: Path, capsys):
+    from codie.permissions import PermissionSet
+
+    approver = CliApprover(input_fn=lambda: "b", output_fn=print, workspace=tmp_path)
+    request = ApprovalRequest(
+        call_id="1",
+        kind="command",
+        summary="run_command('git status')",
+        command="git status",
+    )
+    assert approver.ask(request) is False
+    assert PermissionSet.load(tmp_path).is_blocked("git")
+    output = capsys.readouterr().out
+    assert "Allow? [y/N/b]" in output
+    assert "b blocks this program" in output
+
+
 def test_cli_approver_accepts_yes():
     approver = CliApprover(input_fn=lambda: "y", output_fn=lambda *_args, **_kwargs: None)
     request = ApprovalRequest(call_id="1", kind="pytest", summary="run pytest", command="pytest -q")

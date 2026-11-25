@@ -14,13 +14,21 @@ from textual.widgets import Button, Footer, Header, Input, OptionList, RichLog, 
 
 from codie.agent import CodingAgent, message_text, visible_text
 from codie.approvals import ApprovalRequest
-from codie.guards import MAX_ROUNDS_DEFAULT
+from codie.guards import MAX_ROUNDS_DEFAULT, command_program
 from codie.permissions import PermissionSet, remember_request
 from codie.providers import DEFAULT_OLLAMA_MODEL, bedrock_model_id, build_chat_model, list_ollama_models
 from codie.search import active_provider, provider_label, searxng_base_url
 from codie.sessions import SessionRecorder, list_sessions, load_session as read_session
 from codie.skills import discover_skills, workspace_skills_dir
-from codie.store import delete_guideline, guideline_lines, load_config, load_mcp, save_config, save_mcp
+from codie.store import (
+    codie_home,
+    delete_guideline,
+    guideline_lines,
+    load_config,
+    load_mcp,
+    save_config,
+    save_mcp,
+)
 from codie.tui.screens import (
     ApprovalModal,
     McpModal,
@@ -30,7 +38,8 @@ from codie.tui.screens import (
 )
 
 HELP = (
-    "Commands: /mode [plan|agent], /model, /provider ollama|bedrock, /search [ddgs|searxng|tavily|openai], "
+    "Commands: /mode [plan|agent], /model, /provider ollama|bedrock, /theme [name], "
+    "/search [ddgs|searxng|tavily|openai], "
     "/sessions, /mcp, /skills, /allow, /guidelines, /new, /exit"
 )
 
@@ -132,6 +141,7 @@ class CodieApp(App):
         Binding("ctrl+b", "toggle_sessions", "Sessions"),
         Binding("ctrl+m", "models", "Model"),
         Binding("ctrl+p", "mode", "Mode"),
+        Binding("ctrl+t", "theme", "Theme"),
         Binding("ctrl+s", "search", "Search"),
         Binding("ctrl+e", "mcp", "MCP"),
         Binding("ctrl+n", "new_chat", "New"),
@@ -148,6 +158,9 @@ class CodieApp(App):
         agent: CodingAgent | None = None,
     ) -> None:
         super().__init__()
+        saved_theme = load_config().get("theme")
+        if isinstance(saved_theme, str) and saved_theme in self.available_themes:
+            self.theme = saved_theme
         self.workspace = Path(workspace).resolve()
         self.provider = provider
         self.model_name = model_name or _model_label(provider, model)
@@ -184,6 +197,7 @@ class CodieApp(App):
         with Horizontal(id="chips"):
             yield Button("agent", id="chip-mode")
             yield Button("model", id="chip-model")
+            yield Button("theme", id="chip-theme")
             yield Button("search", id="chip-search")
             yield Button("MCP", id="chip-mcp")
             yield Button("Skills", id="chip-skills")
@@ -202,6 +216,7 @@ class CodieApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.theme_changed_signal.subscribe(self, self._remember_theme)
         self.query_one("#sessions-panel").border_title = "Sessions"
         self.query_one("#chat-panel").border_title = "Chat"
         self.query_one("#steps-panel").border_title = "Steps"
@@ -209,7 +224,7 @@ class CodieApp(App):
         self.refresh_status()
         self.write_chat("codie is ready. Ask a question, or use /help.")
         if self.agent.mcp_errors:
-            self.write_chat("MCP: " + "; ".join(self.agent.mcp_errors))
+            self.write_chat("MCP: " + "; ".join(self.agent.mcp_errors), role="warn")
         self.query_one("#prompt", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -222,6 +237,7 @@ class CodieApp(App):
         actions = {
             "chip-mode": self.action_mode,
             "chip-model": self.action_models,
+            "chip-theme": self.action_theme,
             "chip-search": self.action_search,
             "chip-mcp": self.action_mcp,
             "chip-skills": self.action_skills,
@@ -267,6 +283,12 @@ class CodieApp(App):
             return
         if text.startswith("/mode "):
             self.apply_mode_name(text.split(maxsplit=1)[1])
+            return
+        if text == "/theme":
+            self.action_theme()
+            return
+        if text.startswith("/theme "):
+            self.apply_theme_name(text.split(maxsplit=1)[1])
             return
         if text == "/model":
             self.action_models()
@@ -328,6 +350,16 @@ class CodieApp(App):
         choices = [(f"{provider}\t{model}", f"{provider}   {model}") for provider, model in self.model_choices()]
         self.push_screen(PickerModal("Switch model", choices), self._on_model_label)
 
+    def action_theme(self) -> None:
+        if self._busy:
+            return
+        current = self.theme
+        choices = [
+            (name, name + ("  current" if name == current else ""))
+            for name in sorted(self.available_themes)
+        ]
+        self.push_screen(PickerModal("Theme", choices), self._on_theme)
+
     def action_mode(self) -> None:
         if self._busy:
             return
@@ -373,12 +405,13 @@ class CodieApp(App):
     def action_allow(self) -> None:
         if self._busy:
             return
-        rules = PermissionSet.load(self.workspace).rules
-        if not rules:
-            self.write_chat("No always-allow rules for this workspace.")
+        permissions = PermissionSet.load(self.workspace)
+        if not permissions.rules and not permissions.blocked:
+            self.write_chat("No always-allow rules or blocked programs for this workspace.")
             return
-        choices = [(rule.id, rule.label) for rule in rules]
-        self.push_screen(PickerModal("Always allow", choices, confirm="Revoke"), self._on_revoke)
+        choices = [(f"rule:{rule.id}", f"allow  {rule.label}") for rule in permissions.rules]
+        choices.extend((f"block:{name}", f"block  {name}") for name in permissions.blocked)
+        self.push_screen(PickerModal("Rules", choices, confirm="Remove"), self._on_revoke)
 
     def action_guidelines(self) -> None:
         if self._busy:
@@ -406,6 +439,11 @@ class CodieApp(App):
             self.apply_model(provider, model_name)
         self._focus_prompt()
 
+    def _on_theme(self, choice: str | None) -> None:
+        if choice:
+            self.apply_theme_name(choice)
+        self._focus_prompt()
+
     def _on_mode(self, choice: str | None) -> None:
         if choice:
             self.apply_mode_name(choice)
@@ -424,8 +462,14 @@ class CodieApp(App):
 
     def _on_revoke(self, choice: str | None) -> None:
         if choice:
-            removed = PermissionSet.load(self.workspace).revoke(self.workspace, choice)
-            self.write_chat("Revoked an always-allow rule." if removed else "error: rule was already gone")
+            permissions = PermissionSet.load(self.workspace)
+            if choice.startswith("block:"):
+                removed = permissions.unblock(self.workspace, choice[len("block:") :])
+                self.write_chat("Unblocked a program." if removed else "error: program was already unblocked")
+            else:
+                rule_id = choice[len("rule:") :] if choice.startswith("rule:") else choice
+                removed = permissions.revoke(self.workspace, rule_id)
+                self.write_chat("Revoked an always-allow rule." if removed else "error: rule was already gone")
         self._focus_prompt()
 
     def _on_delete_guideline(self, choice: str | None) -> None:
@@ -474,6 +518,24 @@ class CodieApp(App):
         self.refresh_status()
         if not quiet:
             self.write_chat(f"Switched to {provider} · {model_name}. The conversation is unchanged.")
+
+    def apply_theme_name(self, name: str, *, quiet: bool = False) -> None:
+        name = name.strip().lower()
+        if name not in self.available_themes:
+            self.write_chat("error: unknown theme. Use /theme to pick one.")
+            return
+        self.theme = name
+        save_config({"theme": name})
+        self.refresh_status()
+        if not quiet:
+            self.write_chat(f"Theme is {name}. Saved in {codie_home()}.")
+
+    def _remember_theme(self, theme: object) -> None:
+        name = getattr(theme, "name", "")
+        if isinstance(name, str) and name in self.available_themes:
+            save_config({"theme": name})
+            if self.is_running:
+                self._chip("chip-theme", name)
 
     def apply_mode_name(self, name: str, *, quiet: bool = False) -> None:
         name = name.strip().lower()
@@ -540,7 +602,7 @@ class CodieApp(App):
     def start_turn(self, text: str) -> None:
         self._busy = True
         self.query_one("#prompt", Input).disabled = True
-        self.write_chat(f"you> {text}")
+        self.write_chat(text, role="you")
         self.clear_live()
         self.refresh_status(working=True)
 
@@ -564,6 +626,14 @@ class CodieApp(App):
             label = remember_request(self.workspace, self._pending_request)
             if label:
                 self.write_chat(f"Always allowed for this workspace: {label}")
+        if choice == "block" and self._pending_request is not None:
+            program = command_program(self._pending_request.command)
+            if program:
+                saved = PermissionSet.load(self.workspace).block(self.workspace, program)
+                if saved.startswith("error:"):
+                    self.write_chat(saved)
+                else:
+                    self.write_chat(f"Blocked {saved} for this workspace.")
         self.approver.results.put(allowed)
 
     def add_step(self, line: str) -> None:
@@ -572,19 +642,29 @@ class CodieApp(App):
 
     def add_token(self, text: str) -> None:
         self._live += text
-        self.query_one("#live", Static).update(self._live)
+        self._show_live()
 
     def clear_live(self) -> None:
         self._live = ""
-        if self.is_running:
-            self.query_one("#live", Static).update("")
+        self._show_live()
+
+    def _show_live(self) -> None:
+        if not self.is_running:
+            return
+        if self._live:
+            shown = _paint_chat("codie", f"codie> {self._live}")
+        elif self._busy:
+            shown = _paint_chat("processing", "codie> …")
+        else:
+            shown = ""
+        self.query_one("#live", Static).update(shown)
 
     def finish_turn(self, answer: str) -> None:
         final = (answer or "").strip()
         if final:
-            self.write_chat(final)
-        self.clear_live()
+            self.write_chat(final, role="codie")
         self._busy = False
+        self.clear_live()
         prompt = self.query_one("#prompt", Input)
         prompt.disabled = False
         prompt.focus()
@@ -593,16 +673,20 @@ class CodieApp(App):
 
     def finish_error(self, exc: BaseException) -> None:
         self.write_chat(f"error: {exc}")
-        self.clear_live()
         self._busy = False
+        self.clear_live()
         prompt = self.query_one("#prompt", Input)
         prompt.disabled = False
         prompt.focus()
         self.refresh_status()
 
-    def write_chat(self, line: str) -> None:
-        self.transcript.append(line)
-        self.query_one("#chat", RichLog).write(line)
+    def write_chat(self, line: str, *, role: str = "info") -> None:
+        if role not in {"you", "codie"} and line.startswith("error:"):
+            role = "warn"
+        prefix = role if role in {"you", "codie", "info", "warn"} else "info"
+        plain = f"{prefix}> {line}"
+        self.transcript.append(plain)
+        self.query_one("#chat", RichLog).write(_paint_chat(role, plain))
 
     def refresh_sessions(self) -> None:
         if not self.is_running:
@@ -628,6 +712,7 @@ class CodieApp(App):
         self.query_one("#status", Static).update(self.status_line)
         self._chip("chip-mode", self.agent.mode)
         self._chip("chip-model", f"{self.provider} {self.model_name}")
+        self._chip("chip-theme", self.theme)
         self._chip("chip-search", search)
 
     def _replay(self, messages: list, title: str) -> None:
@@ -637,7 +722,7 @@ class CodieApp(App):
         self.step_lines.clear()
         for message in messages:
             if isinstance(message, HumanMessage):
-                self.write_chat("you> " + message_text(message))
+                self.write_chat(message_text(message), role="you")
             elif isinstance(message, AIMessage) and message.tool_calls:
                 for call in message.tool_calls:
                     name = call.get("name", "tool") if isinstance(call, dict) else "tool"
@@ -645,7 +730,7 @@ class CodieApp(App):
             elif isinstance(message, AIMessage):
                 text = visible_text(message_text(message))
                 if text:
-                    self.write_chat(text)
+                    self.write_chat(text, role="codie")
         self.write_chat(f'Restored "{title}".')
 
     def _chip(self, widget_id: str, label: str) -> None:
@@ -669,6 +754,24 @@ def _model_label(provider: str, model) -> str:
     if provider == "bedrock":
         return bedrock_model_id() or "bedrock"
     return DEFAULT_OLLAMA_MODEL
+
+
+def _paint_chat(role: str, line: str) -> Text:
+    prefix_style = {
+        "you": "bold cyan",
+        "codie": "bold green",
+        "info": "dim",
+        "warn": "bold yellow",
+        "processing": "dim italic",
+    }.get(role, "")
+    body_style = {"warn": "yellow", "info": "dim", "processing": "dim italic"}.get(role, "")
+    head, sep, tail = line.partition("> ")
+    if sep and head in {"you", "codie", "info", "warn"}:
+        text = Text()
+        text.append(head + ">", style=prefix_style)
+        text.append(" " + tail, style=body_style)
+        return text
+    return Text(line, style=prefix_style or body_style)
 
 
 def _paint_step(line: str) -> Text:

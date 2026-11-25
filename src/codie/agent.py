@@ -319,7 +319,7 @@ def _preview(context: ToolContext, call: dict) -> ApprovalRequest | str:
             str(args.get("new", "")),
         )
     if name == "run_command":
-        return context.preview_pytest(call["id"], str(args.get("command", "")))
+        return context.preview_command(call["id"], str(args.get("command", "")))
     if name == "switch_mode":
         return ApprovalRequest(
             call_id=call["id"],

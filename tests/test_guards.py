@@ -66,10 +66,10 @@ def test_command_attacks(tmp_path: Path):
         "pytest > /tmp/out",
         "cat .env",
         "head .ssh/id_rsa",
-        "rm -rf .",
-        "python -c 'print(1)'",
         "cat /etc/passwd",
         "wc ../../etc/passwd",
+        "/bin/ls",
+        "./script",
     ]
     for command in refused:
         result = plan_command(workspace, command)
@@ -86,6 +86,20 @@ def test_find_exec_and_delete_are_blocked(tmp_path: Path):
     executed = plan_command(workspace, "find . -name '*.py'")
     assert not isinstance(executed, str)
     assert executed.argv[0] == "find"
+
+
+def test_unknown_bare_command_needs_approval(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    for command, program in (
+        ("python -c 'print(1)'", "python"),
+        ("rm -rf .", "rm"),
+        ("git status", "git"),
+    ):
+        result = plan_command(workspace, command)
+        assert not isinstance(result, str), command
+        assert result.needs_approval is True
+        assert result.argv[0] == program
 
 
 def test_pytest_needs_approval_and_ls_does_not(tmp_path: Path):

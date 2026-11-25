@@ -19,25 +19,25 @@ Guards live in `src/codie/guards.py` and return `error: ...` text. They do not r
 - **Workspace jail.** The path is resolved, then checked with `Path.relative_to` against the resolved workspace. `../../etc/passwd` fails that check. An absolute path is refused before the join. A symlink is followed by `resolve()`, so a link to a file outside the folder fails the same check.
 - **Secrets.** Any path part that is `.env`, `.ssh`, `.aws`, `.git`, `id_rsa`, `*.pem`, or `*.key` is refused for read, write, list, and find. `list_files` omits those names. `grep` is launched with `--exclude` and `--exclude-dir`, and listing output is scrubbed, so a recursive grep does not print secret files.
 - **No shell.** The command string is rejected if it contains a pipe, semicolon, ampersand, redirect, backtick, dollar sign, or newline. What remains is split with `shlex` and passed to `subprocess.run(..., shell=False)`. `ls && rm -rf .` never runs, because `&` is rejected and because the program is not handed to a shell that would interpret it.
-- **Allow-list.** The first argv token must be a bare name: `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `find`, `pwd`, or `pytest`. `find` with `-exec`, `-ok`, or `-delete` is refused even though `find` is listed. `pytest` is marked for approval. `rm`, `python`, and a path like `/bin/ls` are refused.
+- **Commands.** The first argv token must be a bare name. `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `find`, and `pwd` run immediately. `pytest` asks for approval and can be always-allowed. Any other bare program asks Allow, Deny, or Block. Block remembers the program name for this workspace and later calls are refused without a prompt. `find` with `-exec`, `-ok`, or `-delete` is refused. A path like `/bin/ls` is refused. Shell syntax, secrets, and paths outside the workspace are still refused with no prompt.
 - **Limits.** Commands die after 30 seconds. Tool text sent back to the model is capped and stripped of colour codes.
 
 ## Where durable state lives
 
 `~/.codie` (or `CODIE_HOME` in tests) is the only place Codie writes account data. The workspace jail does not apply to it, and the model has no tool that edits it.
 
-- `config.json` stores the active search provider, the SearXNG URL, and the last mode. API keys stay in the environment.
+- `config.json` stores the active search provider, the SearXNG URL, the last mode, and the selected TUI theme. API keys stay in the environment.
 - `mcp.json` is the MCP server list. The TUI writes it. A failed server is reported and the others stay available.
 - `conversations/<workspace key>/` is one JSON file per conversation: title, mode, model, and the message list.
 - `workspaces/<workspace key>/guidelines.md` holds preferences the user asked the agent to remember. Each line is approved before it is appended, then included in the system prompt.
-- `workspaces/<workspace key>/permissions.json` holds always-allow rules. A rule skips the prompt only. Guards still run, and a rule cannot name a secret path or a command other than `pytest`.
+- `workspaces/<workspace key>/permissions.json` holds always-allow rules and blocked program names. A rule skips the prompt only. Guards still run, and a rule cannot name a secret path or a command other than `pytest`. A blocked name refuses that program with no prompt.
 - Skills are not stored here. Each workspace keeps its own in `<workspace>/.codie/skills/<name>/SKILL.md`. The prompt lists the description. `read_skill` loads the body. A skill from another folder is not visible.
 
 The workspace key is a hash of the resolved folder path. `AGENTS.md` and `.codie/GUIDELINES.md` inside the workspace are read-only project instructions. `save_guideline` does not edit them.
 
 ## Modes
 
-`agent` can edit and run the allow-list. `plan` can list, read, search, grep, and load skills. A write, an edit, a command, or an MCP call in plan mode returns `error: plan mode cannot change the workspace` and does not ask for approval.
+`agent` can edit files and run commands. Free commands run immediately. Other bare programs wait for Allow, Deny, or Block. `plan` can list, read, search, grep, and load skills. A write, an edit, a command, or an MCP call in plan mode returns `error: plan mode cannot change the workspace` and does not ask for approval.
 
 The human can switch with `/mode` at any time. The model can call `switch_mode`. Agent to plan applies immediately. Plan to agent pauses on the approval modal. A denial stays in plan mode. The tool list is rebound before the next model call.
 

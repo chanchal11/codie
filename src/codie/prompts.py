@@ -37,7 +37,7 @@ def _mode_text(mode: str) -> str:
         )
     return (
         "Mode: agent.\n"
-        "You may edit files and run the allow-listed commands. "
+        "You may edit files and run commands. Free commands run immediately. Other programs wait for the user. "
         "Call switch_mode with mode \"plan\" when you should design before changing anything. "
         "That switch applies immediately."
     )
@@ -74,7 +74,8 @@ def _tool_text(mode: str) -> str:
                 "Use this for a new file or a rewrite. Never write an empty file or a placeholder. A human approves the diff before it is written.",
                 "- run_command(command): one command and no shell. Free commands: ls, cat, head, tail, wc, grep, find, pwd. "
                 "To run the tests, call this tool with pytest -q. That call is the approval request. Do not ask for permission in your message. "
-                "Every program outside the allow-list is refused.",
+                "Any other bare program waits for the user to allow, deny, or block it. "
+                "If a program is blocked, do not retry it.",
                 "When the user asks you to fix failing tests, call run_command with pytest -q, read the code and the failing test, "
                 "fix the cause with edit_file or write_file, then call pytest -q again. Do not stop after listing the folder.",
                 "When you add a function, keep the existing code, add the function, add a test, then run pytest -q.",

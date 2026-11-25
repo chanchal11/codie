@@ -72,6 +72,7 @@ class ApprovalModal(ModalScreen[str]):
         Binding("y", "allow", "Allow"),
         Binding("a", "always", "Always"),
         Binding("n", "deny", "Deny"),
+        Binding("b", "block", "Block", show=False),
         Binding("escape", "deny", "Deny"),
     ]
     DEFAULT_CSS = _DIALOG + """
@@ -94,22 +95,30 @@ class ApprovalModal(ModalScreen[str]):
             "write": "Allow this write?",
             "edit": "Allow this edit?",
             "pytest": "Allow pytest?",
+            "command": "Run this command?",
             "mode": "Switch to agent mode?",
             "guideline": "Remember this guideline?",
             "mcp": "Allow this MCP tool?",
         }
         spec = rule_for_request(self.request)
+        off_list = self.request.kind == "command"
         with Vertical(id="dialog"):
             yield Static(titles.get(self.request.kind, "Allow this action?"), id="ask")
-            if spec is not None:
-                yield Static(f"Always allow will remember: {spec[2]}")
-            yield Static("y allow once    a always    n deny")
+            if off_list:
+                yield Static("This program is not on the free list. Block remembers the program name.")
+                yield Static("y allow once    n deny    b block")
+            else:
+                if spec is not None:
+                    yield Static(f"Always allow will remember: {spec[2]}")
+                yield Static("y allow once    a always    n deny")
             yield RichLog(id="diff", wrap=True, markup=False, min_width=20)
             with Horizontal(id="buttons"):
                 yield Button("Deny", id="deny", variant="error")
                 yield Button("Allow once", id="allow", variant="success")
-                if spec is not None:
+                if spec is not None and not off_list:
                     yield Button("Always allow", id="always", variant="warning")
+                if off_list:
+                    yield Button("Block", id="block", variant="warning")
 
     def on_mount(self) -> None:
         self.query_one("#diff", RichLog).write(render_request(self.request))
@@ -124,16 +133,26 @@ class ApprovalModal(ModalScreen[str]):
         if button_id == "allow":
             self.action_allow()
             return
+        if button_id == "block":
+            self.action_block()
+            return
         self.action_deny()
 
     def action_allow(self) -> None:
         self.dismiss("allow")
 
     def action_always(self) -> None:
+        if self.request.kind == "command":
+            return
         if rule_for_request(self.request) is None:
             self.dismiss("allow")
             return
         self.dismiss("always")
+
+    def action_block(self) -> None:
+        if self.request.kind != "command":
+            return
+        self.dismiss("block")
 
     def action_deny(self) -> None:
         self.dismiss("deny")

@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage
 
 from codie.agent import CodingAgent
 from codie.approvals import AllowAll
+from codie.store import codie_home, load_config, save_config
 from codie.tui.app import ApprovalModal, CodieApp
 from codie.tui.screens import PickerModal
 from tests.support import ScriptedModel
@@ -68,7 +69,9 @@ async def test_turn_shows_steps_and_answer(tmp_path: Path):
         await _wait(pilot, lambda: any("says hello" in line for line in app.transcript))
         assert any(line.startswith('-> read_file("hello.txt")') for line in app.step_lines)
         assert any(line.startswith("<-") for line in app.step_lines)
-        assert any(line.startswith("you>") for line in app.transcript)
+        assert any(line.startswith("you> ") for line in app.transcript)
+        assert any(line.startswith("codie> ") and "says hello" in line for line in app.transcript)
+        assert any(line.startswith("info> ") for line in app.transcript)
 
 
 async def test_new_clears_the_conversation(tmp_path: Path):
@@ -81,13 +84,13 @@ async def test_new_clears_the_conversation(tmp_path: Path):
     app = _app(tmp_path, model)
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.press(*"first", "enter")
-        await _wait(pilot, lambda: "remember me" in app.transcript)
+        await _wait(pilot, lambda: any("remember me" in line for line in app.transcript))
         await pilot.press(*"/new", "enter")
         await pilot.pause()
-        assert app.transcript == ["Started a new conversation."]
+        assert app.transcript == ["info> Started a new conversation."]
         assert app.agent.messages == []
         await pilot.press(*"second", "enter")
-        await _wait(pilot, lambda: "fresh start" in app.transcript)
+        await _wait(pilot, lambda: any("fresh start" in line for line in app.transcript))
         seen = " ".join(getattr(message, "content", "") for message in model.prompts[-1])
         assert "first" not in seen
         assert "second" in seen
@@ -121,7 +124,7 @@ async def test_deny_write_from_the_diff_modal(tmp_path: Path):
         assert "\x1b[" not in modal.request.diff
         assert "+new" in modal.request.diff
         await pilot.press("n")
-        await _wait(pilot, lambda: "Left the file alone." in app.transcript)
+        await _wait(pilot, lambda: any("Left the file alone." in line for line in app.transcript))
     assert target.read_text(encoding="utf-8") == "old\n"
     assert any("write_file" in line for line in app.step_lines)
     assert any("denied" in line for line in app.step_lines)
@@ -151,7 +154,7 @@ async def test_allow_write_from_the_diff_modal(tmp_path: Path):
         await pilot.press(*"rewrite", "enter")
         await _wait(pilot, lambda: isinstance(app.screen, ApprovalModal))
         await pilot.press("y")
-        await _wait(pilot, lambda: "Updated hello.txt." in app.transcript)
+        await _wait(pilot, lambda: any("Updated hello.txt." in line for line in app.transcript))
     assert target.read_text(encoding="utf-8") == "new\n"
 
 
@@ -168,14 +171,14 @@ async def test_model_command_keeps_history(tmp_path: Path, monkeypatch):
     app = _app(tmp_path, first)
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.press(*"remember", "enter")
-        await _wait(pilot, lambda: "from the first model" in app.transcript)
+        await _wait(pilot, lambda: any("from the first model" in line for line in app.transcript))
         await pilot.press(*"/model other-model", "enter")
         await pilot.pause()
         assert app.model_name == "other-model"
         assert "other-model" in app.status_line
         assert any("Switched to ollama" in line for line in app.transcript)
         await pilot.press(*"continue", "enter")
-        await _wait(pilot, lambda: "from the second model" in app.transcript)
+        await _wait(pilot, lambda: any("from the second model" in line for line in app.transcript))
         seen = " ".join(str(getattr(message, "content", "")) for message in second.prompts[0])
         assert "remember" in seen
         assert "from the first model" in seen
@@ -195,7 +198,7 @@ async def test_session_switch_restores_the_conversation(tmp_path: Path):
     app = _app(tmp_path, model)
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.press(*"first topic", "enter")
-        await _wait(pilot, lambda: "remember me" in app.transcript)
+        await _wait(pilot, lambda: any("remember me" in line for line in app.transcript))
         await pilot.press(*"/new", "enter")
         await pilot.pause()
         assert app.agent.messages == []
@@ -238,10 +241,10 @@ async def test_always_allow_from_the_modal(tmp_path: Path):
         await pilot.press(*"rewrite", "enter")
         await _wait(pilot, lambda: isinstance(app.screen, ApprovalModal))
         await pilot.press("a")
-        await _wait(pilot, lambda: "once" in app.transcript)
+        await _wait(pilot, lambda: any("once" in line for line in app.transcript))
         assert target.read_text(encoding="utf-8") == "new\n"
         await pilot.press(*"again", "enter")
-        await _wait(pilot, lambda: "twice" in app.transcript)
+        await _wait(pilot, lambda: any("twice" in line for line in app.transcript))
     assert target.read_text(encoding="utf-8") == "newer\n"
     assert any("Always allowed" in line for line in app.transcript)
 
@@ -255,3 +258,116 @@ async def test_provider_bedrock_without_config_is_an_error(tmp_path: Path, monke
         assert any("BEDROCK_MODEL_ID" in line for line in app.transcript)
         assert app.provider == "ollama"
     assert "BEDROCK_MODEL_ID" not in os.environ or os.environ.get("BEDROCK_MODEL_ID", "") == ""
+
+
+async def test_theme_command_is_saved_under_codie_home(tmp_path: Path):
+    app = _app(tmp_path, ScriptedModel([]))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"/theme nord", "enter")
+        await pilot.pause()
+        assert app.theme == "nord"
+        assert app.query_one("#chip-theme").label == "nord"
+        assert any(str(codie_home()) in line for line in app.transcript)
+    assert load_config()["theme"] == "nord"
+    assert (codie_home() / "config.json").is_file()
+
+
+async def test_saved_theme_is_restored(tmp_path: Path):
+    save_config({"theme": "gruvbox"})
+    app = _app(tmp_path, ScriptedModel([]))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        assert app.theme == "gruvbox"
+        assert app.query_one("#chip-theme").label == "gruvbox"
+
+
+async def test_unknown_theme_is_rejected(tmp_path: Path):
+    app = _app(tmp_path, ScriptedModel([]))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"/theme nope", "enter")
+        await pilot.pause()
+        assert app.theme == "textual-dark"
+        assert any(line.startswith("warn> ") and "unknown theme" in line for line in app.transcript)
+
+
+def _command_script(commands: list[str], reply: str) -> ScriptedModel:
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "run_command",
+                    "args": {"command": command},
+                    "id": f"c{index}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        for index, command in enumerate(commands)
+    ]
+    messages.append(AIMessage(content=reply))
+    return ScriptedModel(messages)
+
+
+async def test_allow_runs_an_off_list_command(tmp_path: Path, monkeypatch):
+    calls: list = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+
+        class Result:
+            returncode = 0
+            stdout = "hello\n"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("codie.tools.subprocess.run", fake_run)
+    app = _app(tmp_path, _command_script(["echo hello"], "Ran echo."))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"run it", "enter")
+        await _wait(pilot, lambda: isinstance(app.screen, ApprovalModal))
+        modal = app.screen
+        assert isinstance(modal, ApprovalModal)
+        assert modal.request.kind == "command"
+        assert modal.query_one("#block")
+        await pilot.press("y")
+        await _wait(pilot, lambda: any(line.startswith("codie> ") and "Ran echo." in line for line in app.transcript))
+    assert calls == [["echo", "hello"]]
+    assert any("you> run it" == line for line in app.transcript)
+
+
+async def test_deny_does_not_run_an_off_list_command(tmp_path: Path, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("subprocess should not run")
+
+    monkeypatch.setattr("codie.tools.subprocess.run", boom)
+    app = _app(tmp_path, _command_script(["echo hello"], "Left it alone."))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"run it", "enter")
+        await _wait(pilot, lambda: isinstance(app.screen, ApprovalModal))
+        await pilot.press("n")
+        await _wait(pilot, lambda: "Left it alone." in "".join(app.transcript))
+    assert any("denied" in line for line in app.step_lines)
+
+
+async def test_block_skips_the_modal_the_second_time(tmp_path: Path, monkeypatch):
+    from codie.permissions import PermissionSet
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("subprocess should not run")
+
+    monkeypatch.setattr("codie.tools.subprocess.run", boom)
+    app = _app(
+        tmp_path,
+        _command_script(["python -c 'print(1)'", "python -c 'print(2)'"], "Stopped."),
+    )
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"run python", "enter")
+        await _wait(pilot, lambda: isinstance(app.screen, ApprovalModal))
+        await pilot.press("b")
+        await _wait(pilot, lambda: "Stopped." in "".join(app.transcript))
+        assert not isinstance(app.screen, ApprovalModal)
+    assert PermissionSet.load(tmp_path).is_blocked("python")
+    assert any("blocked" in line for line in app.step_lines)
+    assert any(line.startswith("info> ") and "Blocked python" in line for line in app.transcript)

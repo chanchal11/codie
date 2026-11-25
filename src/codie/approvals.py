@@ -105,14 +105,27 @@ class CliApprover:
             self._output(shown, end="" if shown.endswith("\n") else "\n")
         elif request.command:
             self._output(request.command)
-        self._output("a always allows this action for this workspace.")
-        self._output(f"{request.summary}\nAllow? [y/N] ", end="")
+        if request.kind == "command":
+            self._output("b blocks this program for this workspace.")
+            self._output(f"{request.summary}\nAllow? [y/N/b] ", end="")
+        else:
+            self._output("a always allows this action for this workspace.")
+            self._output(f"{request.summary}\nAllow? [y/N] ", end="")
         try:
             answer = self._input()
         except EOFError:
             self._output()
             return False
         normalized = answer.strip().lower()
+        if normalized in {"b", "block"} and request.kind == "command":
+            from codie.guards import command_program
+
+            program = command_program(request.command)
+            if program and self.workspace is not None:
+                from codie.permissions import PermissionSet
+
+                PermissionSet.load(self.workspace).block(self.workspace, program)
+            return False
         if normalized in {"a", "always"}:
             if self.workspace is not None:
                 from codie.permissions import remember_request

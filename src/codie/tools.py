@@ -85,7 +85,9 @@ class EditFileArgs(BaseModel):
 
 class RunCommandArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    command: str = Field(description="One allow-listed command, or pytest. No shell syntax.")
+    command: str = Field(
+        description="One command with no shell syntax. Free commands run immediately. Other bare programs wait for the user."
+    )
 
 
 class WebSearchArgs(BaseModel):
@@ -217,7 +219,11 @@ def action_needs_approval(workspace: Path, mode: str, name: str, args: dict, mcp
         plan = plan_command(workspace, str(args.get("command", "")))
         if isinstance(plan, str) or not plan.needs_approval:
             return False
-        if PermissionSet.load(workspace).allows("run_command", "pytest"):
+        permissions = PermissionSet.load(workspace)
+        program = plan.argv[0]
+        if permissions.is_blocked(program):
+            return False
+        if program == "pytest" and permissions.allows("run_command", "pytest"):
             return False
         return True
     return False
@@ -342,15 +348,19 @@ class ToolContext:
             path=path,
         )
 
-    def preview_pytest(self, call_id: str, command: str) -> ApprovalRequest | str:
+    def preview_command(self, call_id: str, command: str) -> ApprovalRequest | str:
         plan = plan_command(self.workspace, command)
         if isinstance(plan, str):
             return plan
         if not plan.needs_approval:
             return "error: command does not need approval"
+        program = plan.argv[0]
+        if PermissionSet.load(self.workspace).is_blocked(program):
+            return f"error: '{program}' is blocked for this workspace"
+        kind = "pytest" if program == "pytest" else "command"
         return ApprovalRequest(
             call_id=call_id,
-            kind="pytest",
+            kind=kind,
             summary=f"run_command({quote_arg(command)})",
             command=command,
         )
@@ -427,7 +437,8 @@ class ToolContext:
             ("edit_file", "Replace one exact snippet in a file. A human approves the diff first.", EditFileArgs, self.edit_file),
             (
                 "run_command",
-                "Run one command with no shell. Free: ls cat head tail wc grep find pwd. pytest needs human approval.",
+                "Run one command with no shell. Free: ls cat head tail wc grep find pwd. "
+                "pytest and any other bare program wait for the user. A blocked program must not be retried.",
                 RunCommandArgs,
                 self.run_command,
             ),
@@ -610,10 +621,14 @@ class ToolContext:
         plan = plan_command(self.workspace, command)
         if isinstance(plan, str):
             return plan
+        program = plan.argv[0]
+        if PermissionSet.load(self.workspace).is_blocked(program):
+            return f"error: '{program}' is blocked for this workspace"
         if plan.needs_approval:
+            kind = "pytest" if program == "pytest" else "command"
             request = ApprovalRequest(
                 call_id="",
-                kind="pytest",
+                kind=kind,
                 summary=f"run_command({quote_arg(command)})",
                 command=command,
             )

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from codie.approvals import ApprovalRequest
-from codie.guards import is_secret_name, path_is_secret
+from codie.guards import command_program, is_secret_name, path_is_secret
 from codie.store import load_permissions_data, save_permissions_data
 
 
@@ -23,13 +23,15 @@ class Rule:
 
 
 class PermissionSet:
-    def __init__(self, rules: list[Rule]) -> None:
+    def __init__(self, rules: list[Rule], blocked: list[str] | None = None) -> None:
         self.rules = list(rules)
+        self.blocked = list(blocked or [])
 
     @classmethod
     def load(cls, workspace: Path) -> PermissionSet:
+        data = load_permissions_data(workspace)
         rules: list[Rule] = []
-        for raw in load_permissions_data(workspace)["rules"]:
+        for raw in data["rules"]:
             tool = str(raw.get("tool", "")).strip()
             match = str(raw.get("match", "")).strip()
             if not tool or not match:
@@ -42,7 +44,11 @@ class PermissionSet:
                     label=str(raw.get("label") or f"{tool} {match}"),
                 )
             )
-        return cls(rules)
+        blocked: list[str] = []
+        for name in data["blocked"]:
+            if command_program(name) == name and name not in blocked:
+                blocked.append(name)
+        return cls(rules, blocked)
 
     def allows(self, tool: str, match: str) -> bool:
         if _match_is_blocked(tool, match):
@@ -58,7 +64,7 @@ class PermissionSet:
             return existing
         rule = Rule(id=uuid.uuid4().hex, tool=tool, match=match, label=label)
         self.rules.append(rule)
-        save_permissions_data(workspace, {"rules": [item.to_dict() for item in self.rules]})
+        self._save(workspace)
         return rule
 
     def revoke(self, workspace: Path, rule_id: str) -> bool:
@@ -66,8 +72,36 @@ class PermissionSet:
         if len(kept) == len(self.rules):
             return False
         self.rules = kept
-        save_permissions_data(workspace, {"rules": [item.to_dict() for item in self.rules]})
+        self._save(workspace)
         return True
+
+    def is_blocked(self, program: str) -> bool:
+        return program in self.blocked
+
+    def block(self, workspace: Path, program: str) -> str:
+        """Remember a bare program name. Returns the name, or an error string."""
+        if command_program(program) != program:
+            return "error: only a bare program name can be blocked"
+        if program not in self.blocked:
+            self.blocked.append(program)
+            self._save(workspace)
+        return program
+
+    def unblock(self, workspace: Path, program: str) -> bool:
+        if program not in self.blocked:
+            return False
+        self.blocked = [name for name in self.blocked if name != program]
+        self._save(workspace)
+        return True
+
+    def _save(self, workspace: Path) -> None:
+        save_permissions_data(
+            workspace,
+            {
+                "rules": [item.to_dict() for item in self.rules],
+                "blocked": list(self.blocked),
+            },
+        )
 
 
 def normalize_rel(path: str) -> str | None:

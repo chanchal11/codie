@@ -5,6 +5,7 @@ from pathlib import Path
 from codie.store import (
     append_guideline,
     codie_home,
+    config_path,
     delete_guideline,
     guideline_lines,
     load_config,
@@ -29,7 +30,17 @@ def test_config_round_trip_ignores_unknown_keys():
     loaded = load_config()
     assert loaded["search_provider"] == "tavily"
     assert loaded["last_mode"] == "plan"
+    assert loaded["theme"] == "textual-dark"
     assert "api_key" not in loaded
+
+
+def test_selected_theme_is_saved_under_codie_home(isolated_codie_home: Path):
+    save_config({"theme": "Nord"})
+    assert config_path() == isolated_codie_home / "config.json"
+    assert config_path().is_file()
+    assert load_config()["theme"] == "nord"
+    save_config({"theme": "../outside"})
+    assert load_config()["theme"] == "textual-dark"
 
 
 def test_guidelines_append_and_delete(tmp_path: Path):

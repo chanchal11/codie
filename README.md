@@ -1,6 +1,6 @@
 # codie
 
-A terminal coding agent for one folder. It can list, read, and search files, write a full file after you approve the diff, and run a short allow-list of commands. The model never touches the machine itself. Every path and command goes through guards in code.
+A terminal coding agent for one folder. It can list, read, and search files, write a full file after you approve the diff, and run commands. Free commands run immediately. Any other bare program waits for you to allow, deny, or block it. The model never touches the machine itself. Every path and command goes through guards in code.
 
 Ollama is the default. Amazon Bedrock is the other provider. Both go through LangChain chat models and the same LangGraph loop.
 
@@ -20,15 +20,15 @@ bash is the same five commands, with `cp .env.example .env` in place of `Copy-It
 
 The last command is a one-off. Omit the question and the Textual app opens: saved conversations on the left, chat in the middle, tool steps on the right. The status line shows the mode, model, web search provider, and folder. Click a status chip or use a slash command.
 
-`/mode plan` only inspects the project. `/mode agent` can edit again. The model may ask to switch; plan to agent waits for you, and agent to plan applies immediately. `/model` switches model, `/provider ollama` or `/provider bedrock` switches provider, `/search` switches web search, `/sessions` opens another saved conversation, `/new` starts a fresh one, and `/exit` quits. `new` and `exit` work too.
+`/mode plan` only inspects the project. `/mode agent` can edit again. The model may ask to switch; plan to agent waits for you, and agent to plan applies immediately. `/model` switches model, `/provider ollama` or `/provider bedrock` switches provider, `/theme` switches the terminal colours, `/search` switches web search, `/sessions` opens another saved conversation, `/new` starts a fresh one, and `/exit` quits. `new` and `exit` work too.
 
-`/mcp` edits MCP servers, `/skills` lists `SKILL.md` files, `/guidelines` shows notes remembered for this folder, and `/allow` revokes an always-allow rule. Keys are `ctrl+b` sessions, `ctrl+m` model, `ctrl+p` mode, `ctrl+s` search, `ctrl+e` MCP, `ctrl+n` new, `ctrl+q` quit.
+`/mcp` edits MCP servers, `/skills` lists `SKILL.md` files, `/guidelines` shows notes remembered for this folder, and `/allow` revokes an always-allow rule. Keys are `ctrl+b` sessions, `ctrl+m` model, `ctrl+p` mode, `ctrl+t` theme, `ctrl+s` search, `ctrl+e` MCP, `ctrl+n` new, `ctrl+q` quit.
 
 Bedrock needs `AWS_REGION`, `BEDROCK_MODEL_ID`, and normal AWS credentials in `.env`. The TUI can switch to it mid-conversation without dropping the thread.
 
 Web search uses DuckDuckGo until you pick another provider. SearXNG needs `SEARXNG_URL` or a URL saved from `/search`. Tavily needs `TAVILY_API_KEY`. OpenAI web search needs `OPENAI_API_KEY` and is separate from the chat model, so it works while the agent itself is on Ollama. Exa, Firecrawl, and Brave are reserved names and are not selectable yet.
 
-Codie stores config, MCP servers, conversations, workspace guidelines, and always-allow rules in `~/.codie` (`/home/<you>/.codie`). Skills stay in the workspace itself: `.codie/skills/<name>/SKILL.md`, with a name and description in the file. Opening another folder does not reuse them. `AGENTS.md` in the workspace is read as project instructions. API keys stay in `.env`. The agent cannot edit `~/.codie`.
+Codie stores config, MCP servers, conversations, workspace guidelines, and always-allow rules in `~/.codie` (`/home/<you>/.codie`). The theme you pick with `/theme` or the Theme chip is written to `config.json` in that directory and restored the next time the TUI opens. Skills stay in the workspace itself: `.codie/skills/<name>/SKILL.md`, with a name and description in the file. Opening another folder does not reuse them. `AGENTS.md` in the workspace is read as project instructions. API keys stay in `.env`. The agent cannot edit `~/.codie`.
 
 ## Sample project
 
@@ -39,9 +39,9 @@ Codie stores config, MCP servers, conversations, workspace guidelines, and alway
 - Paths are resolved, then required to stay inside the workspace. Absolute paths and `..` escapes are refused. Symlinks that point outside are refused.
 - `.env`, `.ssh`, `.aws`, `.git`, `id_rsa`, `*.pem`, and `*.key` are never read, listed, or grepped.
 - Commands run as an argv list with `shell=False`. `| ; & > <` `` ` `` `$` are rejected before anything is spawned.
-- `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `find`, and `pwd` run freely. `find -exec`, `-ok`, and `-delete` do not. `pytest` runs only after you approve, unless this workspace always-allows pytest. Everything else is refused.
+- `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `find`, and `pwd` run freely. `find -exec`, `-ok`, and `-delete` do not. `pytest` runs only after you approve, unless this workspace always-allows pytest. Any other bare program asks you to allow it once, deny it, or block that program name for this workspace. A blocked program is refused later with no prompt.
 - Plan mode cannot write, edit, run commands, or call MCP. The check is in code, not only in the prompt.
-- Writes, edits, pytest, MCP calls, mode switches into agent, and saved guidelines show the change and ask `Allow? [y/N]`. `a` remembers that exact file, `pytest`, or that MCP tool for this workspace only. A no goes back to the model as `error: user denied this action`. An always-allow rule never bypasses a guard.
+- Writes, edits, pytest, MCP calls, mode switches into agent, and saved guidelines show the change and ask `Allow? [y/N]`. `a` remembers that exact file, `pytest`, or that MCP tool for this workspace only. An off-list command asks `Allow? [y/N/b]`. `b` blocks that program name. A no goes back to the model as `error: user denied this action`. An always-allow rule never bypasses a guard.
 - Commands time out after 30 seconds. Tool output is capped. A question stops after 12 model rounds, and any tool call still open is answered with an error so the next turn is valid.
 - Colours are for the terminal only. The model gets plain text.
 

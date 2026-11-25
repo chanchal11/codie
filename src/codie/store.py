@@ -12,15 +12,18 @@ GUIDELINE_FILE_LIMIT = 8_000
 GUIDELINE_LINE_LIMIT = 500
 MAX_GUIDELINES = 40
 
+DEFAULT_THEME = "textual-dark"
+
 DEFAULT_CONFIG: dict = {
     "search_provider": "",
     "searxng_url": "http://127.0.0.1:8080",
     "openai_search_model": "gpt-4.1-mini",
     "last_mode": "agent",
+    "theme": DEFAULT_THEME,
 }
 
 DEFAULT_MCP: dict = {"mcpServers": {}}
-DEFAULT_PERMISSIONS: dict = {"rules": []}
+DEFAULT_PERMISSIONS: dict = {"rules": [], "blocked": []}
 
 
 def codie_home() -> Path:
@@ -81,6 +84,18 @@ def config_path() -> Path:
     return codie_home() / "config.json"
 
 
+def clean_theme(value: object) -> str:
+    """Theme names are short slugs such as ``nord``. Anything else falls back."""
+    if not isinstance(value, str):
+        return DEFAULT_THEME
+    name = value.strip().lower()
+    if not name or len(name) > 64:
+        return DEFAULT_THEME
+    if not all(character.isalnum() or character == "-" for character in name):
+        return DEFAULT_THEME
+    return name
+
+
 def load_config() -> dict:
     data = read_json(config_path(), DEFAULT_CONFIG)
     merged = dict(DEFAULT_CONFIG)
@@ -89,6 +104,7 @@ def load_config() -> dict:
         merged["last_mode"] = "agent"
     provider = merged.get("search_provider")
     merged["search_provider"] = provider.strip().lower() if isinstance(provider, str) else ""
+    merged["theme"] = clean_theme(merged.get("theme"))
     return merged
 
 
@@ -99,6 +115,7 @@ def save_config(data: dict) -> None:
             current[key] = data[key]
     if current.get("last_mode") not in {"agent", "plan"}:
         current["last_mode"] = "agent"
+    current["theme"] = clean_theme(current.get("theme"))
     atomic_write_json(config_path(), current)
 
 
@@ -216,16 +233,24 @@ def permissions_path(workspace: Path) -> Path:
 
 def load_permissions_data(workspace: Path) -> dict:
     data = read_json(permissions_path(workspace), DEFAULT_PERMISSIONS)
-    rules = data.get("rules")
+    rules = data.get("rules") if isinstance(data, dict) else None
     if not isinstance(rules, list):
-        return {"rules": []}
+        rules = []
+    blocked = data.get("blocked") if isinstance(data, dict) else None
+    if not isinstance(blocked, list):
+        blocked = []
     clean = [rule for rule in rules if isinstance(rule, dict)]
-    return {"rules": clean}
+    names = [item.strip() for item in blocked if isinstance(item, str) and item.strip()]
+    return {"rules": clean, "blocked": names}
 
 
 def save_permissions_data(workspace: Path, data: dict) -> None:
     rules = data.get("rules") if isinstance(data, dict) else None
     if not isinstance(rules, list):
         rules = []
+    blocked = data.get("blocked") if isinstance(data, dict) else None
+    if not isinstance(blocked, list):
+        blocked = []
+    names = [item.strip() for item in blocked if isinstance(item, str) and item.strip()]
     remember_workspace(workspace)
-    atomic_write_json(permissions_path(workspace), {"rules": rules})
+    atomic_write_json(permissions_path(workspace), {"rules": rules, "blocked": names})
