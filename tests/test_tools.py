@@ -72,6 +72,9 @@ def test_attack_inputs_are_refused(tools: ToolContext, workspace: Path, monkeypa
         tools.write_file(".env", "TOKEN=nope\n"),
         tools.write_file("/tmp/owned.txt", "nope"),
         tools.write_file("../outside.txt", "nope"),
+        tools.edit_file(".env", "TOKEN", "nope"),
+        tools.edit_file("../outside.txt", "a", "b"),
+        tools.grep("TOKEN", ".env"),
     ]
     for result in attacks:
         assert result.startswith("error:"), result
@@ -151,6 +154,77 @@ def test_placeholder_write_is_refused(workspace: Path):
     result = tools.write_file("hello.txt", ".")
     assert result.startswith("error:")
     assert (workspace / "hello.txt").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_edit_replaces_one_snippet(workspace: Path):
+    tools = ToolContext(workspace, AllowAll())
+    assert tools.edit_file("hello.txt", "hello", "goodbye") == "edited hello.txt"
+    assert (workspace / "hello.txt").read_text(encoding="utf-8") == "goodbye\n"
+
+
+def test_edit_refuses_a_snippet_that_matches_twice(workspace: Path):
+    target = workspace / "hello.txt"
+    target.write_text("a a\n", encoding="utf-8")
+    tools = ToolContext(workspace, AllowAll())
+    result = tools.edit_file("hello.txt", "a", "b")
+    assert "matched 2 times" in result
+    assert target.read_text(encoding="utf-8") == "a a\n"
+
+
+def test_read_file_can_return_a_line_range(workspace: Path):
+    target = workspace / "hello.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    tools = ToolContext(workspace, AllowAll())
+    assert tools.read_file("hello.txt") == "one\ntwo\nthree\n"
+    assert tools.read_file("hello.txt", start_line=2, end_line=2) == "2|two"
+
+
+def test_grep_skips_secret_files(tools: ToolContext):
+    result = tools.grep("TOKEN", ".")
+    assert "TOKEN=secret" not in result
+    assert ".env" not in result
+    assert not result.startswith("error:")
+
+
+def test_pytest_rule_does_not_allow_other_commands(workspace: Path, monkeypatch):
+    from codie.permissions import PermissionSet
+
+    saved = PermissionSet.load(workspace).add(workspace, "run_command", "pytest", "pytest")
+    assert not isinstance(saved, str)
+    calls: list = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+
+        class Result:
+            returncode = 0
+            stdout = "1 passed\n"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    tools = ToolContext(workspace, DenyAll())
+    assert "denied" not in tools.run_command("pytest -q")
+    assert calls and calls[0][0] == "pytest"
+    blocked = tools.run_command("find . -delete")
+    assert blocked.startswith("error:")
+    assert len(calls) == 1
+
+
+def test_a_secret_rule_cannot_unlock_env(workspace: Path):
+    from codie.permissions import PermissionSet
+    from codie.store import save_permissions_data
+
+    save_permissions_data(
+        workspace,
+        {"rules": [{"id": "x", "tool": "write_file", "match": ".env", "label": "nope"}]},
+    )
+    assert PermissionSet.load(workspace).allows("write_file", ".env") is False
+    tools = ToolContext(workspace, AllowAll())
+    result = tools.write_file(".env", "TOKEN=nope\n")
+    assert result.startswith("error:")
+    assert (workspace / ".env").read_text(encoding="utf-8") == "TOKEN=secret\n"
 
 
 def test_allowed_write_replaces_the_file(workspace: Path):

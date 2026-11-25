@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Protocol
 
 DENIED = "error: user denied this action"
@@ -93,23 +94,32 @@ def colorize_diff(diff: str) -> str:
 class CliApprover:
     """Ask on stdin. Colours are printed for the human only."""
 
-    def __init__(self, input_fn=input, output_fn=print) -> None:
+    def __init__(self, input_fn=input, output_fn=print, workspace: Path | None = None) -> None:
         self._input = input_fn
         self._output = output_fn
+        self.workspace = workspace
 
     def ask(self, request: ApprovalRequest) -> bool:
-        if request.kind == "write" and request.diff:
+        if request.kind in {"write", "edit"} and request.diff:
             shown = colorize_diff(request.diff) if sys.stdout.isatty() else request.diff
             self._output(shown, end="" if shown.endswith("\n") else "\n")
         elif request.command:
             self._output(request.command)
+        self._output("a always allows this action for this workspace.")
         self._output(f"{request.summary}\nAllow? [y/N] ", end="")
         try:
             answer = self._input()
         except EOFError:
             self._output()
             return False
-        return answer.strip().lower() in {"y", "yes"}
+        normalized = answer.strip().lower()
+        if normalized in {"a", "always"}:
+            if self.workspace is not None:
+                from codie.permissions import remember_request
+
+                remember_request(self.workspace, request)
+            return True
+        return normalized in {"y", "yes"}
 
 
 class CliSink:

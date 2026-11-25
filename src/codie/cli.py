@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
 def run_oneshot(model, workspace: Path, question: str, max_rounds: int) -> int:
     """Print steps and the answer without opening the TUI."""
     sink = CliSink()
-    agent = CodingAgent(model, workspace, CliApprover(), sink, max_rounds)
+    agent = CodingAgent(model, workspace, CliApprover(workspace=workspace), sink, max_rounds)
     try:
         answer = agent.run_turn(question)
     except Exception as exc:

@@ -16,9 +16,10 @@ from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
 
 from codie.approvals import ApprovalRequest, Approver, NullSink, StepSink
-from codie.guards import MAX_ROUNDS_DEFAULT, plan_command
+from codie.guards import MAX_ROUNDS_DEFAULT
+from codie.mcp_client import StdioMcpClient
 from codie.prompts import system_prompt
-from codie.tools import ToolContext
+from codie.tools import ToolContext, action_needs_approval
 
 _STEP_LIMIT = "error: step limit reached before this tool ran"
 _THINKING = re.compile(r"<thinking>.*?</thinking>\s*", re.DOTALL | re.IGNORECASE)
@@ -40,6 +41,9 @@ class CodingAgent:
         approver: Approver,
         sink: StepSink | None = None,
         max_rounds: int = MAX_ROUNDS_DEFAULT,
+        *,
+        mode: str = "agent",
+        mcp_client=None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.approver = approver
@@ -47,15 +51,39 @@ class CodingAgent:
         self.max_rounds = max_rounds
         self.messages: list = []
         self.last_rounds = 0
-        self._schemas = ToolContext(self.workspace, approver, NullSink()).langchain_tools()
+        self.mode = mode if mode in {"agent", "plan"} else "agent"
+        self.recorder = None
+        self.mcp_client = mcp_client if mcp_client is not None else StdioMcpClient()
+        self.mcp_tools: dict = {}
+        self.mcp_errors: list[str] = []
         self._raw_model = model
-        self.model = _bind(model, self._schemas)
+        self._schemas = []
+        self.model = model
+        self.refresh_mcp()
         self.graph = self._compile()
 
     def set_model(self, model) -> None:
         self._raw_model = model
-        self.model = _bind(model, self._schemas)
+        self.reload_tools()
         self.graph = self._compile()
+
+    def set_mode(self, mode: str) -> None:
+        """Human or tool switch. Rebinds tools and does not rebuild the running graph."""
+        if mode not in {"agent", "plan"}:
+            raise ValueError(mode)
+        self.mode = mode
+        self.reload_tools()
+
+    def reload_tools(self) -> None:
+        self._schemas = self._tool_context(NullSink()).langchain_tools()
+        self.model = _bind(self._raw_model, self._schemas)
+
+    def refresh_mcp(self) -> list[str]:
+        infos, errors = self.mcp_client.discover()
+        self.mcp_tools = {info.exposed_name: info for info in infos}
+        self.mcp_errors = list(errors)
+        self.reload_tools()
+        return self.mcp_errors
 
     def reset(self) -> None:
         self.messages = []
@@ -81,6 +109,7 @@ class CodingAgent:
             values = _state_values(self.graph, config, result)
             self.messages = list(values.get("messages", []))
             self.last_rounds = int(values.get("round_count", 0))
+            self._save_conversation()
             return _final_text(self.messages)
 
     def complete(self, messages: list) -> AIMessage:
@@ -123,15 +152,18 @@ class CodingAgent:
         agent = self
 
         def agent_node(state: AgentState) -> dict:
-            prompt = [SystemMessage(content=system_prompt(agent.workspace)), *state["messages"]]
+            prompt = [
+                SystemMessage(content=system_prompt(agent.workspace, mode=agent.mode)),
+                *state["messages"],
+            ]
             response = agent.complete(prompt)
             return {"messages": [response], "round_count": state["round_count"] + 1}
 
         def approve_node(state: AgentState) -> dict:
-            quiet = ToolContext(agent.workspace, agent.approver, NullSink())
+            quiet = agent._tool_context(NullSink(), follow_mode=False)
             requests: list[dict[str, str]] = []
             for call in _tool_calls(state["messages"][-1]):
-                if not _needs_approval(agent.workspace, call["name"], call["args"]):
+                if not _needs_approval(agent, call["name"], call["args"]):
                     continue
                 preview = _preview(quiet, call)
                 if isinstance(preview, str):
@@ -146,7 +178,7 @@ class CodingAgent:
             return {"approvals": {str(key): bool(value) for key, value in decisions.items()}}
 
         def tools_node(state: AgentState) -> dict:
-            context = ToolContext(agent.workspace, agent.approver, agent.sink)
+            context = agent._tool_context(agent.sink)
             approvals = state.get("approvals") or {}
             outputs = []
             for call in _tool_calls(state["messages"][-1]):
@@ -169,7 +201,7 @@ class CodingAgent:
                 return "end"
             if state["round_count"] >= agent.max_rounds:
                 return "close"
-            if any(_needs_approval(agent.workspace, call["name"], call["args"]) for call in calls):
+            if any(_needs_approval(agent, call["name"], call["args"]) for call in calls):
                 return "approve"
             return "tools"
 
@@ -188,6 +220,26 @@ class CodingAgent:
         builder.add_edge("tools", "agent")
         builder.add_edge("close", END)
         return builder.compile(checkpointer=InMemorySaver())
+
+    def _tool_context(self, sink: StepSink, *, follow_mode: bool = True) -> ToolContext:
+        return ToolContext(
+            self.workspace,
+            self.approver,
+            sink,
+            mode=self.mode,
+            mcp_tools=self.mcp_tools,
+            mcp_client=self.mcp_client,
+            on_mode_change=self.set_mode if follow_mode else None,
+        )
+
+    def _save_conversation(self) -> None:
+        recorder = self.recorder
+        if recorder is None:
+            return
+        try:
+            recorder.save(self.messages, self.mode)
+        except OSError as exc:
+            self.sink.step(f"<- error: could not save conversation ({exc})")
 
 
 def visible_text(text: str) -> str:
@@ -250,23 +302,44 @@ def _tool_calls(message) -> list[dict[str, Any]]:
     return calls
 
 
-def _needs_approval(workspace: Path, name: str, args: dict) -> bool:
-    if name == "write_file":
-        return True
-    if name != "run_command":
-        return False
-    plan = plan_command(workspace, str(args.get("command", "")))
-    return not isinstance(plan, str) and plan.needs_approval
+def _needs_approval(agent: CodingAgent, name: str, args: dict) -> bool:
+    return action_needs_approval(agent.workspace, agent.mode, name, args, agent.mcp_tools)
 
 
 def _preview(context: ToolContext, call: dict) -> ApprovalRequest | str:
-    if call["name"] == "write_file":
-        return context.preview_write(
+    name = call["name"]
+    args = call["args"]
+    if name == "write_file":
+        return context.preview_write(call["id"], str(args.get("path", "")), str(args.get("content", "")))
+    if name == "edit_file":
+        return context.preview_edit(
             call["id"],
-            str(call["args"].get("path", "")),
-            str(call["args"].get("content", "")),
+            str(args.get("path", "")),
+            str(args.get("old", "")),
+            str(args.get("new", "")),
         )
-    return context.preview_pytest(call["id"], str(call["args"].get("command", "")))
+    if name == "run_command":
+        return context.preview_pytest(call["id"], str(args.get("command", "")))
+    if name == "switch_mode":
+        return ApprovalRequest(
+            call_id=call["id"],
+            kind="mode",
+            summary="Switch to agent mode?",
+            command=str(args.get("reason", "")).strip(),
+        )
+    if name == "save_guideline":
+        text = " ".join(str(args.get("text", "")).split())
+        if not text:
+            return "error: empty guideline"
+        return ApprovalRequest(
+            call_id=call["id"],
+            kind="guideline",
+            summary="Save this workspace guideline?",
+            command=text,
+        )
+    if name in context.mcp_tools:
+        return context.preview_mcp(call["id"], name, args)
+    return f"error: unknown approval for '{name}'"
 
 
 def _pending_interrupts(graph, config, result) -> list:

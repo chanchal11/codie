@@ -227,6 +227,167 @@ def test_web_search_is_a_normal_tool(tmp_path: Path, monkeypatch):
     assert "\x1b[" not in tool_message.content
 
 
+def test_plan_mode_blocks_a_write_without_asking(tmp_path: Path):
+    target = tmp_path / "hello.txt"
+    target.write_text("old\n", encoding="utf-8")
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write_file",
+                        "args": {"path": "hello.txt", "content": "new\n"},
+                        "id": "w1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="I only planned it."),
+        ]
+    )
+    approver = RecordingApprover(allow=True)
+    agent = CodingAgent(model, tmp_path, approver, mode="plan")
+    assert agent.run_turn("rewrite it") == "I only planned it."
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert approver.requests == []
+    denial = next(message for message in agent.messages if isinstance(message, ToolMessage))
+    assert denial.content == "error: plan mode cannot change the workspace"
+    assert "write_file" not in {tool.name for tool in agent._schemas}
+
+
+def test_plan_to_agent_can_be_denied(tmp_path: Path):
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "switch_mode",
+                        "args": {"mode": "agent", "reason": "apply the plan"},
+                        "id": "m1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="Staying in plan mode."),
+        ]
+    )
+    approver = RecordingApprover(allow=False)
+    agent = CodingAgent(model, tmp_path, approver, mode="plan")
+    assert agent.run_turn("go ahead") == "Staying in plan mode."
+    assert agent.mode == "plan"
+    assert approver.requests[0].kind == "mode"
+    denial = next(message for message in agent.messages if isinstance(message, ToolMessage))
+    assert denial.content == "error: user denied this action"
+
+
+def test_agent_to_plan_does_not_ask(tmp_path: Path):
+    target = tmp_path / "hello.txt"
+    target.write_text("old\n", encoding="utf-8")
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "switch_mode",
+                        "args": {"mode": "plan", "reason": "design first"},
+                        "id": "m1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write_file",
+                        "args": {"path": "hello.txt", "content": "new\n"},
+                        "id": "w1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="Left it alone."),
+        ]
+    )
+    approver = RecordingApprover(allow=True)
+    agent = CodingAgent(model, tmp_path, approver)
+    assert agent.run_turn("think first") == "Left it alone."
+    assert approver.requests == []
+    assert agent.mode == "plan"
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_always_allow_skips_the_next_prompt(tmp_path: Path):
+    from codie.permissions import remember_request
+
+    target = tmp_path / "hello.txt"
+    target.write_text("old\n", encoding="utf-8")
+
+    class Remember:
+        def __init__(self) -> None:
+            self.asks = 0
+
+        def ask(self, request) -> bool:
+            self.asks += 1
+            remember_request(tmp_path, request)
+            return True
+
+    def write(content: str, call_id: str) -> AIMessage:
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {"path": "hello.txt", "content": content},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    model = ScriptedModel(
+        [
+            write("new\n", "w1"),
+            AIMessage(content="once"),
+            write("newer\n", "w2"),
+            AIMessage(content="twice"),
+        ]
+    )
+    approver = Remember()
+    agent = CodingAgent(model, tmp_path, approver)
+    assert agent.run_turn("rewrite") == "once"
+    assert approver.asks == 1
+    assert agent.run_turn("again") == "twice"
+    assert approver.asks == 1
+    assert target.read_text(encoding="utf-8") == "newer\n"
+
+
+def test_guideline_is_added_to_the_next_prompt(tmp_path: Path):
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "save_guideline",
+                        "args": {"text": "run tests with pytest -q"},
+                        "id": "g1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="Remembered."),
+        ]
+    )
+    agent = CodingAgent(model, tmp_path, RecordingApprover(allow=True))
+    assert agent.run_turn("please remember that") == "Remembered."
+    assert "run tests with pytest -q" in _text(model.prompts[1])
+    assert "run tests with pytest -q" not in _text([model.prompts[0][0]])
+
+
 def test_tool_schemas_are_strict(tmp_path: Path):
     from codie.tools import ToolContext
 
@@ -236,13 +397,21 @@ def test_tool_schemas_are_strict(tmp_path: Path):
         "list_files",
         "read_file",
         "find_files",
+        "grep",
         "write_file",
+        "edit_file",
         "run_command",
         "web_search",
+        "read_skill",
+        "switch_mode",
+        "save_guideline",
     }
     for tool in tools:
         schema = tool.args_schema.model_json_schema()
         assert schema.get("additionalProperties") is False
         assert "approved" not in schema.get("properties", {})
         required = set(schema.get("required", []))
-        assert required == set(schema.get("properties", {}))
+        properties = schema.get("properties", {})
+        for field, spec in properties.items():
+            if "default" not in spec:
+                assert field in required

@@ -7,10 +7,10 @@ A turn is a LangGraph graph, not a single chat completion.
 1. The agent node sends the system prompt plus the message list to the chat model. The prompt is sent on every call. Ollama and Bedrock do not keep it for us.
 2. If the model returns plain text, the turn ends.
 3. If it returns tool calls, every call is answered with a `ToolMessage` that has the same id. Several calls in one reply are all run before the model is asked again.
-4. Writes and `pytest` pause the graph with `interrupt()` before they run. The CLI or the Textual modal resumes with yes or no. The tools node then runs once, so a command is not executed twice.
+4. Writes, edits, `pytest`, MCP calls, saved guidelines, and a switch from plan to agent pause the graph with `interrupt()` before they run. The CLI or the Textual modal resumes with yes, always, or no. An always-allow rule stored for this workspace skips the pause. The tools node then runs once, so a command is not executed twice.
 5. The graph stops when the model stops calling tools, or when the round cap is hit. On the cap, each unanswered tool call gets `error: step limit reached before this tool ran`, then a short assistant message. The next question is not stuck behind an open tool call.
 
-Conversation memory is the message list on the agent. `/new` clears it. Switching models builds a new chat model and keeps that list, so a follow-up still sees the earlier tool results.
+Conversation memory is the message list on the agent. The TUI writes that list to `~/.codie` after a successful turn. `/new` archives it and starts an empty one. Switching models builds a new chat model and keeps that list, so a follow-up still sees the earlier tool results.
 
 ## What each guard stops
 
@@ -22,6 +22,31 @@ Guards live in `src/codie/guards.py` and return `error: ...` text. They do not r
 - **Allow-list.** The first argv token must be a bare name: `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `find`, `pwd`, or `pytest`. `find` with `-exec`, `-ok`, or `-delete` is refused even though `find` is listed. `pytest` is marked for approval. `rm`, `python`, and a path like `/bin/ls` are refused.
 - **Limits.** Commands die after 30 seconds. Tool text sent back to the model is capped and stripped of colour codes.
 
+## Where durable state lives
+
+`~/.codie` (or `CODIE_HOME` in tests) is the only place Codie writes account data. The workspace jail does not apply to it, and the model has no tool that edits it.
+
+- `config.json` stores the active search provider, the SearXNG URL, and the last mode. API keys stay in the environment.
+- `mcp.json` is the MCP server list. The TUI writes it. A failed server is reported and the others stay available.
+- `conversations/<workspace key>/` is one JSON file per conversation: title, mode, model, and the message list.
+- `workspaces/<workspace key>/guidelines.md` holds preferences the user asked the agent to remember. Each line is approved before it is appended, then included in the system prompt.
+- `workspaces/<workspace key>/permissions.json` holds always-allow rules. A rule skips the prompt only. Guards still run, and a rule cannot name a secret path or a command other than `pytest`.
+- `skills/<name>/SKILL.md` is a personal skill. A workspace may also ship `.codie/skills/<name>/SKILL.md`, which wins on the same name. The prompt lists the description. `read_skill` loads the body.
+
+The workspace key is a hash of the resolved folder path. `AGENTS.md` and `.codie/GUIDELINES.md` inside the workspace are read-only project instructions. `save_guideline` does not edit them.
+
+## Modes
+
+`agent` can edit and run the allow-list. `plan` can list, read, search, grep, and load skills. A write, an edit, a command, or an MCP call in plan mode returns `error: plan mode cannot change the workspace` and does not ask for approval.
+
+The human can switch with `/mode` at any time. The model can call `switch_mode`. Agent to plan applies immediately. Plan to agent pauses on the approval modal. A denial stays in plan mode. The tool list is rebound before the next model call.
+
+## Web search and MCP
+
+`web_search` calls the provider named in `config.json`. SearXNG, Tavily, and the OpenAI Responses `web_search` tool are implemented. Exa, Firecrawl, and Brave are named slots the TUI does not offer until a backend is registered. With no provider selected, DuckDuckGo is the fallback.
+
+MCP servers are stdio only. Their tools are registered as `mcp_<server>_<tool>`, hidden in plan mode, and approved like a write unless an always-allow rule names that server and tool.
+
 ## Why approval sits in code
 
-The model can be talked into anything, including by a file it just read. A sentence in the prompt that says "ask first" is a wish. `interrupt()` runs in our process, before `write_text` or `subprocess.run`, and the only way past it is the yes/no returned by the CLI or the TUI. A denial is a tool result, so the model can change its plan, and it cannot skip the check by claiming it already has permission.
+The model can be talked into anything, including by a file it just read. A sentence in the prompt that says "ask first" is a wish. `interrupt()` runs in our process, before `write_text` or `subprocess.run`. The only way past it is the yes, always, or no returned by the CLI or the TUI, or an always-allow rule that same person already stored for this workspace. Guards still run first. A denial is a tool result, so the model can change its plan, and it cannot skip the check by claiming it already has permission.
