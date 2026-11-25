@@ -22,6 +22,8 @@ from codie.prompts import system_prompt
 from codie.tools import ToolContext, action_needs_approval
 
 _STEP_LIMIT = "error: step limit reached before this tool ran"
+_STOPPED = "Stopped."
+_STOPPED_TOOL = "error: stopped"
 _THINKING = re.compile(r"<thinking>.*?</thinking>\s*", re.DOTALL | re.IGNORECASE)
 
 
@@ -59,8 +61,23 @@ class CodingAgent:
         self._raw_model = model
         self._schemas = []
         self.model = model
+        self._turn_token: object | None = None
+        self._stop_token: object | None = None
         self.refresh_mcp()
         self.graph = self._compile()
+
+    def arm(self) -> None:
+        """Open a turn before work starts, so Stop can land before the thread does."""
+        self._turn_token = object()
+        self._stop_token = None
+
+    def cancel(self) -> None:
+        """Ask the running turn to finish. A later turn is left alone."""
+        self._stop_token = self._turn_token
+
+    def cancelled(self) -> bool:
+        token = self._turn_token
+        return token is not None and self._stop_token is token
 
     def set_model(self, model) -> None:
         self._raw_model = model
@@ -90,6 +107,22 @@ class CodingAgent:
         self.last_rounds = 0
 
     def run_turn(self, text: str) -> str:
+        owns_turn = self._turn_token is None
+        if owns_turn:
+            self.arm()
+        try:
+            return self._run_turn(text)
+        finally:
+            self._turn_token = None
+            self._stop_token = None
+
+    def _run_turn(self, text: str) -> str:
+        if self.cancelled():
+            reply = self._stopped_reply()
+            self.messages = [*self.messages, HumanMessage(content=text), reply]
+            self.last_rounds = 0
+            self._save_conversation()
+            return _STOPPED
         thread_id = str(uuid.uuid4())
         config: dict[str, Any] = {
             "configurable": {"thread_id": thread_id},
@@ -104,7 +137,10 @@ class CodingAgent:
             result = self.graph.invoke(payload, config)
             pending = _pending_interrupts(self.graph, config, result)
             if pending:
-                payload = Command(resume=_decisions(pending, self.approver))
+                if self.cancelled():
+                    payload = Command(resume=_denied(pending))
+                else:
+                    payload = Command(resume=_decisions(pending, self.approver))
                 continue
             values = _state_values(self.graph, config, result)
             self.messages = list(values.get("messages", []))
@@ -112,25 +148,47 @@ class CodingAgent:
             self._save_conversation()
             return _final_text(self.messages)
 
+    def _stopped_reply(self) -> AIMessage:
+        self.sink.drop_tokens()
+        self.sink.step("<- stopped")
+        return AIMessage(content=_STOPPED)
+
+    def _abort_if_stopped(self) -> AIMessage | None:
+        if self.cancelled():
+            return self._stopped_reply()
+        return None
+
     def complete(self, messages: list) -> AIMessage:
         """Call the model, streaming tokens when the reply is a final answer."""
         stream = getattr(self.model, "stream", None)
         if stream is None:
-            return _as_ai_message(self.model.invoke(messages))
+            stopped = self._abort_if_stopped()
+            if stopped is not None:
+                return stopped
+            message = self._finish_reply(_as_ai_message(self.model.invoke(messages)), "")
+            return self._abort_if_stopped() or message
         chunks: list = []
         pieces: list[str] = []
         try:
             for chunk in stream(messages):
+                if self.cancelled():
+                    return self._stopped_reply()
                 piece = message_text(chunk)
                 if piece:
                     pieces.append(piece)
                 chunks.append(chunk)
         except Exception:
+            if self.cancelled():
+                return self._stopped_reply()
             if chunks:
                 raise
-            return _as_ai_message(self.model.invoke(messages))
+            message = self._finish_reply(_as_ai_message(self.model.invoke(messages)), "")
+            return self._abort_if_stopped() or message
+        if self.cancelled():
+            return self._stopped_reply()
         if not chunks:
-            return _as_ai_message(self.model.invoke(messages))
+            message = self._finish_reply(_as_ai_message(self.model.invoke(messages)), "")
+            return self._abort_if_stopped() or message
         if len(chunks) == 1 and type(chunks[0]) is AIMessage:
             message = chunks[0]
         else:
@@ -138,20 +196,31 @@ class CodingAgent:
             for chunk in chunks[1:]:
                 merged = merged + chunk
             message = _as_ai_message(merged)
+        finished = self._finish_reply(message, "".join(pieces))
+        return self._abort_if_stopped() or finished
+
+    def _finish_reply(self, message: AIMessage, streamed: str) -> AIMessage:
+        """Run a tool call the model wrote as JSON, then keep the loop going."""
+        message = _lift_text_tool_calls(message, _schema_names(self._schemas))
+        if isinstance(message.content, str):
+            message.content = visible_text(message.content)
         if _tool_calls(message):
             self.sink.drop_tokens()
             return message
-        shown = visible_text("".join(pieces) if pieces else message_text(message))
+        shown = visible_text(streamed if streamed else message_text(message))
         if shown:
             self.sink.token(shown)
-        if isinstance(message.content, str):
-            message.content = visible_text(message.content)
         return message
 
     def _compile(self):
         agent = self
 
         def agent_node(state: AgentState) -> dict:
+            if agent.cancelled():
+                return {
+                    "messages": [agent._stopped_reply()],
+                    "round_count": state["round_count"] + 1,
+                }
             prompt = [
                 SystemMessage(content=system_prompt(agent.workspace, mode=agent.mode)),
                 *state["messages"],
@@ -182,9 +251,16 @@ class CodingAgent:
             approvals = state.get("approvals") or {}
             outputs = []
             for call in _tool_calls(state["messages"][-1]):
-                approved = approvals[call["id"]] if call["id"] in approvals else None
-                result = context.dispatch(call["name"], call["args"], approved=approved)
-                outputs.append(ToolMessage(content=result, tool_call_id=call["id"]))
+                if agent.cancelled():
+                    result = _STOPPED_TOOL
+                else:
+                    approved = approvals[call["id"]] if call["id"] in approvals else None
+                    try:
+                        result = context.dispatch(call["name"], call["args"], approved=approved)
+                    except Exception as exc:
+                        result = f"error: {exc.__class__.__name__}: {exc}"
+                        agent.sink.step(f"<- {result[:200]}")
+                outputs.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
             return {"messages": outputs}
 
         def close_node(state: AgentState) -> dict:
@@ -195,8 +271,19 @@ class CodingAgent:
             agent.sink.step("<- step limit reached")
             return {"messages": extras}
 
+        def stop_node(state: AgentState) -> dict:
+            extras = []
+            for call in _tool_calls(state["messages"][-1]):
+                extras.append(ToolMessage(content=_STOPPED_TOOL, tool_call_id=call["id"]))
+            extras.append(AIMessage(content=_STOPPED))
+            agent.sink.drop_tokens()
+            agent.sink.step("<- stopped")
+            return {"messages": extras}
+
         def route(state: AgentState) -> str:
             calls = _tool_calls(state["messages"][-1])
+            if agent.cancelled():
+                return "stop" if calls else "end"
             if not calls:
                 return "end"
             if state["round_count"] >= agent.max_rounds:
@@ -210,15 +297,17 @@ class CodingAgent:
         builder.add_node("approve", approve_node)
         builder.add_node("tools", tools_node)
         builder.add_node("close", close_node)
+        builder.add_node("stop", stop_node)
         builder.add_edge(START, "agent")
         builder.add_conditional_edges(
             "agent",
             route,
-            {"end": END, "close": "close", "approve": "approve", "tools": "tools"},
+            {"end": END, "close": "close", "approve": "approve", "tools": "tools", "stop": "stop"},
         )
         builder.add_edge("approve", "tools")
         builder.add_edge("tools", "agent")
         builder.add_edge("close", END)
+        builder.add_edge("stop", END)
         return builder.compile(checkpointer=InMemorySaver())
 
     def _tool_context(self, sink: StepSink, *, follow_mode: bool = True) -> ToolContext:
@@ -230,6 +319,7 @@ class CodingAgent:
             mcp_tools=self.mcp_tools,
             mcp_client=self.mcp_client,
             on_mode_change=self.set_mode if follow_mode else None,
+            should_stop=self.cancelled,
         )
 
     def _save_conversation(self) -> None:
@@ -277,6 +367,109 @@ def _as_ai_message(message) -> AIMessage:
         tool_calls=list(getattr(message, "tool_calls", None) or []),
         id=getattr(message, "id", None),
     )
+
+
+_BUILTIN_TOOLS = {
+    "list_files",
+    "read_file",
+    "find_files",
+    "grep",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "web_search",
+    "read_skill",
+    "switch_mode",
+    "save_guideline",
+}
+_EMPTY_FENCE = re.compile(r"```(?:json|tool_call|tool)?\s*```", re.IGNORECASE)
+_EMPTY_TOOL_TAG = re.compile(r"<tool_call>\s*</tool_call>", re.IGNORECASE)
+
+
+def _schema_names(schemas) -> set[str]:
+    names: set[str] = set()
+    for schema in schemas or []:
+        name = getattr(schema, "name", None)
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names or set(_BUILTIN_TOOLS)
+
+
+def _lift_text_tool_calls(message: AIMessage, names: set[str]) -> AIMessage:
+    """Turn a JSON tool call written in the reply into a real tool call.
+
+    Some models, after a failed command, print ``{"name": ..., "parameters": ...}``
+    instead of using the tool channel. That text used to end the turn.
+    """
+    if _tool_calls(message):
+        return message
+    text = message_text(message)
+    cleaned, calls = _extract_text_tool_calls(text, names)
+    if not calls:
+        return message
+    return AIMessage(content=cleaned, tool_calls=calls, id=getattr(message, "id", None))
+
+
+def _extract_text_tool_calls(text: str, names: set[str]) -> tuple[str, list[dict[str, Any]]]:
+    decoder = json.JSONDecoder()
+    calls: list[dict[str, Any]] = []
+    pieces: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] != "{":
+            pieces.append(text[index])
+            index += 1
+            continue
+        try:
+            obj, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            pieces.append(text[index])
+            index += 1
+            continue
+        found = _calls_from_json(obj, names)
+        if not found:
+            pieces.append(text[index:end])
+            index = end
+            continue
+        for item in found:
+            item["id"] = f"call_text_{len(calls)}"
+            calls.append(item)
+        index = end
+    cleaned = _EMPTY_TOOL_TAG.sub("", _EMPTY_FENCE.sub("", "".join(pieces)))
+    return cleaned.strip(), calls
+
+
+def _calls_from_json(obj: Any, names: set[str]) -> list[dict[str, Any]]:
+    if isinstance(obj, dict):
+        call = _call_from_obj(obj, names)
+        return [call] if call else []
+    if isinstance(obj, list) and obj:
+        calls = [_call_from_obj(item, names) for item in obj]
+        if all(call is not None for call in calls):
+            return [call for call in calls if call is not None]
+    return []
+
+
+def _call_from_obj(obj: Any, names: set[str]) -> dict[str, Any] | None:
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("name")
+    if not isinstance(name, str) or name not in names:
+        return None
+    params = None
+    for key in ("parameters", "arguments", "args"):
+        if key in obj:
+            params = obj[key]
+            break
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(params, dict):
+        return None
+    return {"name": name, "args": params, "type": "tool_call"}
 
 
 def _tool_calls(message) -> list[dict[str, Any]]:
@@ -356,6 +549,17 @@ def _state_values(graph, config, result) -> dict:
     if isinstance(result, dict) and "messages" in result:
         return result
     return dict(graph.get_state(config).values)
+
+
+def _denied(pending) -> dict[str, bool]:
+    decisions: dict[str, bool] = {}
+    for item in pending:
+        value = item.value if hasattr(item, "value") else item
+        requests = value.get("requests", []) if isinstance(value, dict) else []
+        for raw in requests:
+            request = ApprovalRequest.from_dict(raw)
+            decisions[request.call_id] = False
+    return decisions
 
 
 def _decisions(pending, approver: Approver) -> dict[str, bool]:

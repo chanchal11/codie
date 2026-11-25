@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
+import time
 from difflib import unified_diff
 from pathlib import Path
 
@@ -240,6 +242,7 @@ class ToolContext:
         mcp_tools: dict[str, McpToolInfo] | None = None,
         mcp_client=None,
         on_mode_change=None,
+        should_stop=None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.approver = approver
@@ -248,6 +251,7 @@ class ToolContext:
         self.mcp_tools = dict(mcp_tools or {})
         self.mcp_client = mcp_client or EmptyMcpClient()
         self.on_mode_change = on_mode_change
+        self.should_stop = should_stop
 
     def list_files(self, path: str) -> str:
         self.sink.step(format_call("list_files", {"path": path}))
@@ -636,21 +640,25 @@ class ToolContext:
                 return DENIED
         return self._spawn(plan)
 
+    def _stopped(self) -> bool:
+        return bool(self.should_stop and self.should_stop())
+
     def _spawn(self, plan) -> str:
+        if self._stopped():
+            return "error: stopped"
         try:
-            completed = subprocess.run(
+            completed = _launch_command(
                 plan.argv,
-                cwd=self.workspace,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=COMMAND_TIMEOUT_SECONDS,
-                check=False,
+                self.workspace,
+                COMMAND_TIMEOUT_SECONDS,
+                self.should_stop,
             )
         except subprocess.TimeoutExpired:
             return "error: command timed out after 30s"
         except OSError as exc:
             return f"error: cannot run command ({exc})"
+        if isinstance(completed, str):
+            return completed
         output = strip_ansi(completed.stdout or "")
         if completed.stderr:
             error_text = strip_ansi(completed.stderr)
@@ -831,6 +839,61 @@ class ToolContext:
                 )
             )
         return tools
+
+
+def _launch_command(argv, cwd, timeout, should_stop=None):
+    """Run argv. With ``should_stop``, poll so a click on Stop can kill the process."""
+    if should_stop is not None and should_stop():
+        return "error: stopped"
+    if should_stop is None:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + timeout
+    while True:
+        if should_stop():
+            _terminate(process)
+            return "error: stopped"
+        try:
+            stdout, stderr = process.communicate(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                _terminate(process)
+                raise subprocess.TimeoutExpired(argv, timeout)
+            continue
+        code = process.returncode if process.returncode is not None else 0
+        return subprocess.CompletedProcess(argv, code, stdout or "", stderr or "")
+
+
+def _terminate(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            process.kill()
+        except OSError:
+            return
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        return
 
 
 def _mcp_stub(**_kwargs) -> str:

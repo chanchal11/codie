@@ -301,6 +301,32 @@ def test_pytest_denial_does_not_spawn(workspace: Path, monkeypatch):
     assert result == "error: user denied this action"
 
 
+def test_stop_kills_a_running_command(workspace: Path):
+    import threading
+
+    flag = threading.Event()
+    started = threading.Event()
+    real_popen = subprocess.Popen
+
+    def popen(argv, **kwargs):
+        started.set()
+        return real_popen(argv, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("codie.tools.subprocess.Popen", popen)
+    tools = ToolContext(workspace, AllowAll(), should_stop=flag.is_set)
+
+    def stop() -> None:
+        assert started.wait(2)
+        flag.set()
+
+    threading.Thread(target=stop, daemon=True).start()
+    try:
+        assert tools.run_command("sleep 30") == "error: stopped"
+    finally:
+        monkeypatch.undo()
+
+
 def test_command_timeout(tools: ToolContext, monkeypatch):
     def fake_run(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd=["ls"], timeout=30)

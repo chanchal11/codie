@@ -1,6 +1,8 @@
 """Textual pilot tests for the IDE layout, steps, model switch, and approvals."""
 
 import os
+import threading
+import time
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -37,6 +39,7 @@ async def test_layout_and_exit(tmp_path: Path):
         assert app.query_one("#chat")
         assert app.query_one("#steps")
         assert app.query_one("#prompt")
+        assert app.query_one("#stop").disabled
         assert "ollama" in app.status_line
         assert "scripted" in app.status_line
         assert "agent" in app.status_line
@@ -312,7 +315,7 @@ def _command_script(commands: list[str], reply: str) -> ScriptedModel:
 async def test_allow_runs_an_off_list_command(tmp_path: Path, monkeypatch):
     calls: list = []
 
-    def fake_run(argv, **_kwargs):
+    def fake_run(argv, *_args, **_kwargs):
         calls.append(list(argv))
 
         class Result:
@@ -322,7 +325,7 @@ async def test_allow_runs_an_off_list_command(tmp_path: Path, monkeypatch):
 
         return Result()
 
-    monkeypatch.setattr("codie.tools.subprocess.run", fake_run)
+    monkeypatch.setattr("codie.tools._launch_command", fake_run)
     app = _app(tmp_path, _command_script(["echo hello"], "Ran echo."))
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.press(*"run it", "enter")
@@ -371,3 +374,42 @@ async def test_block_skips_the_modal_the_second_time(tmp_path: Path, monkeypatch
     assert PermissionSet.load(tmp_path).is_blocked("python")
     assert any("blocked" in line for line in app.step_lines)
     assert any(line.startswith("info> ") and "Blocked python" in line for line in app.transcript)
+
+
+async def test_stop_button_ends_the_running_turn(tmp_path: Path):
+    class Hold:
+        def __init__(self) -> None:
+            self.agent = None
+            self.started = threading.Event()
+            self.calls = 0
+
+        def bind_tools(self, tools, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            return AIMessage(content="after stop")
+
+        def stream(self, _messages):
+            self.calls += 1
+            if self.calls > 1:
+                yield AIMessage(content="after stop")
+                return
+            self.started.set()
+            while self.agent is None or not self.agent.cancelled():
+                time.sleep(0.01)
+            yield AIMessage(content="too late")
+
+    model = Hold()
+    app = _app(tmp_path, model)
+    model.agent = app.agent
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"hello", "enter")
+        await _wait(pilot, lambda: model.started.is_set() and not app.query_one("#stop").disabled)
+        await pilot.click("#stop")
+        await _wait(pilot, lambda: any(line == "codie> Stopped." for line in app.transcript))
+        assert any(line == "<- stopping" for line in app.step_lines)
+        assert not any("too late" in line for line in app.transcript)
+        assert app.query_one("#stop").disabled
+        assert app.query_one("#prompt").disabled is False
+        await pilot.press(*"next", "enter")
+        await _wait(pilot, lambda: any("after stop" in line for line in app.transcript))

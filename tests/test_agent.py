@@ -388,6 +388,157 @@ def test_guideline_is_added_to_the_next_prompt(tmp_path: Path):
     assert "run tests with pytest -q" not in _text([model.prompts[0][0]])
 
 
+def test_json_tool_call_after_an_error_still_runs(tmp_path: Path):
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content=(
+                    'Since the device "wlan0" does not exist, I will try a different command.\n\n'
+                    '{"name": "run_command", "parameters":\n'
+                    '{"command": "pwd"}}'
+                )
+            ),
+            AIMessage(content="The workspace path is above."),
+        ]
+    )
+    sink = ListSink()
+    agent = CodingAgent(model, tmp_path, AllowAll(), sink)
+    answer = agent.run_turn("where is this folder?")
+    assert answer == "The workspace path is above."
+    assert any(line.startswith('-> run_command("pwd")') for line in sink.steps)
+    assert "exit code" in _text(model.prompts[1])
+    assert '{"name": "run_command"' not in answer
+
+
+def test_fenced_json_tool_call_still_runs(tmp_path: Path):
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content='```json\n{"name": "run_command", "arguments": {"command": "pwd"}}\n```'
+            ),
+            AIMessage(content="Done."),
+        ]
+    )
+    agent = CodingAgent(model, tmp_path, AllowAll(), ListSink())
+    assert agent.run_turn("pwd") == "Done."
+    assert any(isinstance(message, ToolMessage) for message in agent.messages)
+
+
+def test_plain_text_with_braces_does_not_run_a_tool(tmp_path: Path):
+    model = ScriptedModel([AIMessage(content='The set is {1, 2} and the note is {"path": "."}.')])
+    sink = ListSink()
+    agent = CodingAgent(model, tmp_path, AllowAll(), sink)
+    answer = agent.run_turn("explain")
+    assert answer == 'The set is {1, 2} and the note is {"path": "."}.'
+    assert sink.steps == []
+
+
+def test_tool_exception_is_returned_and_the_turn_continues(tmp_path: Path, monkeypatch):
+    def boom(_self, _name, _args, approved=None):
+        raise RuntimeError("wlan0 does not exist")
+
+    monkeypatch.setattr("codie.tools.ToolContext.dispatch", boom)
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_command",
+                        "args": {"command": "pwd"},
+                        "id": "e1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="Tried a different command."),
+        ]
+    )
+    agent = CodingAgent(model, tmp_path, AllowAll(), ListSink())
+    assert agent.run_turn("check the address") == "Tried a different command."
+    sent = _text(model.prompts[1])
+    assert "wlan0 does not exist" in sent
+    assert "error:" in sent
+
+
+def test_cancel_during_the_model_call_stops_before_the_answer(tmp_path: Path):
+    import threading
+    import time
+
+    sink = ListSink()
+
+    class Hold:
+        def __init__(self) -> None:
+            self.agent = None
+            self.started = threading.Event()
+            self.calls = 0
+
+        def bind_tools(self, tools, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            return AIMessage(content="after stop")
+
+        def stream(self, _messages):
+            self.calls += 1
+            if self.calls > 1:
+                yield AIMessage(content="after stop")
+                return
+            self.started.set()
+            while self.agent is None or not self.agent.cancelled():
+                time.sleep(0.01)
+            yield AIMessage(content="too late")
+
+    model = Hold()
+    agent = CodingAgent(model, tmp_path, AllowAll(), sink)
+    model.agent = agent
+
+    def stop() -> None:
+        assert model.started.wait(2)
+        agent.cancel()
+
+    threading.Thread(target=stop, daemon=True).start()
+    assert agent.run_turn("go") == "Stopped."
+    assert sink.tokens == []
+    assert any(line == "<- stopped" for line in sink.steps)
+    assert agent.run_turn("next") == "after stop"
+
+
+def test_cancel_drops_a_tool_call_instead_of_running_it(tmp_path: Path):
+    (tmp_path / "hello.txt").write_text("hello\n", encoding="utf-8")
+
+    class Sink(ListSink):
+        def __init__(self) -> None:
+            super().__init__()
+            self.agent = None
+
+        def drop_tokens(self) -> None:
+            self.agent.cancel()
+
+    sink = Sink()
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_file",
+                        "args": {"path": "hello.txt"},
+                        "id": "r1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="should not be asked"),
+        ]
+    )
+    agent = CodingAgent(model, tmp_path, AllowAll(), sink)
+    sink.agent = agent
+    assert agent.run_turn("read it") == "Stopped."
+    assert not any(line.startswith("-> read_file(") for line in sink.steps)
+    assert model.responses
+
+
 def test_tool_schemas_are_strict(tmp_path: Path):
     from codie.tools import ToolContext
 

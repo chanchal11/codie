@@ -40,7 +40,8 @@ from codie.tui.screens import (
 HELP = (
     "Commands: /mode [plan|agent], /model, /provider ollama|bedrock, /theme [name], "
     "/search [ddgs|searxng|tavily|openai], "
-    "/sessions, /mcp, /skills, /allow, /guidelines, /new, /exit"
+    "/sessions, /mcp, /skills, /allow, /guidelines, /new, /exit. "
+    "Stop ends the turn that is running."
 )
 
 
@@ -52,8 +53,22 @@ class TuiApprover:
         self.results: queue.Queue[bool] = queue.Queue()
 
     def ask(self, request: ApprovalRequest) -> bool:
+        self.drain()
         self.app.call_from_thread(self.app.request_approval, request)
-        return self.results.get()
+        while not self.app.agent.cancelled():
+            try:
+                return bool(self.results.get(timeout=0.1))
+            except queue.Empty:
+                continue
+        self.app.call_from_thread(self.app.dismiss_approval)
+        return False
+
+    def drain(self) -> None:
+        while True:
+            try:
+                self.results.get_nowait()
+            except queue.Empty:
+                return
 
 
 class TuiSink:
@@ -132,9 +147,17 @@ class CodieApp(App):
         max-height: 8;
         padding: 0 1;
     }
-    #prompt {
+    #prompt-row {
         dock: bottom;
-        margin: 0 1 1 1;
+        height: auto;
+        padding: 0 1 1 1;
+    }
+    #prompt {
+        width: 1fr;
+    }
+    #stop {
+        min-width: 12;
+        margin: 0 1 0 0;
     }
     """
     BINDINGS = [
@@ -145,6 +168,7 @@ class CodieApp(App):
         Binding("ctrl+s", "search", "Search"),
         Binding("ctrl+e", "mcp", "MCP"),
         Binding("ctrl+n", "new_chat", "New"),
+        Binding("ctrl+x", "stop", "Stop", priority=True),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
@@ -212,7 +236,9 @@ class CodieApp(App):
                 yield Static("", id="live")
             with Vertical(id="steps-panel"):
                 yield RichLog(id="steps", wrap=True, markup=False, min_width=20)
-        yield Input(placeholder="Ask codie, or /help", id="prompt")
+        with Horizontal(id="prompt-row"):
+            yield Button("Stop", id="stop", variant="error", disabled=True)
+            yield Input(placeholder="Ask codie, or /help", id="prompt")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -229,6 +255,10 @@ class CodieApp(App):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
+        if button_id == "stop":
+            event.stop()
+            self.action_stop()
+            return
         if not button_id.startswith("chip-"):
             return
         event.stop()
@@ -599,7 +629,22 @@ class CodieApp(App):
         self.refresh_status()
         self.refresh_sessions()
 
+    def action_stop(self) -> None:
+        if not self._busy or self.agent.cancelled():
+            return
+        self.agent.cancel()
+        self.dismiss_approval()
+        button = self.query_one("#stop", Button)
+        button.disabled = True
+        button.label = "Stopping"
+        self.add_step("<- stopping")
+
+    def dismiss_approval(self) -> None:
+        if isinstance(self.screen, ApprovalModal):
+            self.screen.dismiss(False)
+
     def start_turn(self, text: str) -> None:
+        self.agent.arm()
         self._busy = True
         self.query_one("#prompt", Input).disabled = True
         self.write_chat(text, role="you")
@@ -617,10 +662,15 @@ class CodieApp(App):
         self.run_worker(work, name="turn", thread=True, exclusive=True, exit_on_error=False)
 
     def request_approval(self, request: ApprovalRequest) -> None:
+        if self.agent.cancelled():
+            return
         self._pending_request = request
         self.push_screen(ApprovalModal(request), self._approval_done)
 
     def _approval_done(self, choice: str | bool | None) -> None:
+        if self.agent.cancelled():
+            self.approver.drain()
+            return
         allowed = choice in {True, "allow", "always"}
         if choice == "always" and self._pending_request is not None:
             label = remember_request(self.workspace, self._pending_request)
@@ -714,6 +764,11 @@ class CodieApp(App):
         self._chip("chip-model", f"{self.provider} {self.model_name}")
         self._chip("chip-theme", self.theme)
         self._chip("chip-search", search)
+        stop = self.query_one("#stop", Button)
+        busy = working or self._busy
+        stop.disabled = not busy or self.agent.cancelled()
+        if not busy:
+            stop.label = "Stop"
 
     def _replay(self, messages: list, title: str) -> None:
         self.query_one("#chat", RichLog).clear()
