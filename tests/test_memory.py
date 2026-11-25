@@ -34,20 +34,30 @@ def test_project_instructions_are_included(tmp_path: Path):
     assert "Project instructions" in prompt
 
 
-def test_workspace_skill_overrides_a_personal_one(tmp_path: Path, isolated_codie_home: Path):
-    personal = isolated_codie_home / "skills" / "notes" / "SKILL.md"
-    personal.parent.mkdir(parents=True)
-    personal.write_text(
+def test_skills_come_only_from_this_workspace(tmp_path: Path, isolated_codie_home: Path):
+    home_skill = isolated_codie_home / "skills" / "notes" / "SKILL.md"
+    home_skill.parent.mkdir(parents=True)
+    home_skill.write_text(
         "---\nname: notes\ndescription: personal\n---\nPERSONAL-BODY\n",
         encoding="utf-8",
     )
-    local = tmp_path / ".codie" / "skills" / "notes" / "SKILL.md"
+    workspace = tmp_path / "ws"
+    other = tmp_path / "other"
+    local = workspace / ".codie" / "skills" / "local" / "SKILL.md"
+    elsewhere = other / ".codie" / "skills" / "notes" / "SKILL.md"
     local.parent.mkdir(parents=True)
+    elsewhere.parent.mkdir(parents=True)
     local.write_text(
-        "---\nname: notes\ndescription: workspace\n---\nWORKSPACE-BODY\n",
+        "---\nname: local\ndescription: this workspace\n---\nLOCAL-BODY\n",
         encoding="utf-8",
     )
-    skill = find_skill(tmp_path, "notes")
-    assert skill is not None
-    assert skill.description == "workspace"
-    assert "WORKSPACE-BODY" in skill.body
+    elsewhere.write_text(
+        "---\nname: notes\ndescription: other workspace\n---\nOTHER-BODY\n",
+        encoding="utf-8",
+    )
+    names = [skill.name for skill in discover_skills(workspace)]
+    assert names == ["local"]
+    assert find_skill(workspace, "notes") is None
+    assert "PERSONAL-BODY" not in system_prompt(workspace)
+    assert "OTHER-BODY" not in system_prompt(workspace)
+    assert "this workspace" in system_prompt(workspace)

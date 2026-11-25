@@ -28,7 +28,7 @@ Bedrock needs `AWS_REGION`, `BEDROCK_MODEL_ID`, and normal AWS credentials in `.
 
 Web search uses DuckDuckGo until you pick another provider. SearXNG needs `SEARXNG_URL` or a URL saved from `/search`. Tavily needs `TAVILY_API_KEY`. OpenAI web search needs `OPENAI_API_KEY` and is separate from the chat model, so it works while the agent itself is on Ollama. Exa, Firecrawl, and Brave are reserved names and are not selectable yet.
 
-Codie stores config, MCP servers, conversations, workspace guidelines, always-allow rules, and personal skills in `~/.codie` (`/home/<you>/.codie`). A skill is a `SKILL.md` file with a name and description. Personal skills live in `~/.codie/skills/<name>/`, and a project can ship `.codie/skills/<name>/`. `AGENTS.md` in the workspace is read as project instructions. API keys stay in `.env`. The agent cannot edit `~/.codie`.
+Codie stores config, MCP servers, conversations, workspace guidelines, and always-allow rules in `~/.codie` (`/home/<you>/.codie`). Skills stay in the workspace itself: `.codie/skills/<name>/SKILL.md`, with a name and description in the file. Opening another folder does not reuse them. `AGENTS.md` in the workspace is read as project instructions. API keys stay in `.env`. The agent cannot edit `~/.codie`.
 
 ## Sample project
 

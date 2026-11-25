@@ -249,15 +249,16 @@ class SkillsModal(ModalScreen[None]):
     }
     """
 
-    def __init__(self, rows: list[tuple[str, str, str]]) -> None:
+    def __init__(self, rows: list[tuple[str, str, str]], folder: str) -> None:
         super().__init__()
         self.rows = rows
+        self.folder = folder
 
     def compose(self) -> ComposeResult:
         labels = [f"{name}  {description}" for name, description, _body in self.rows] or ["(no skills)"]
         with Vertical(id="dialog"):
             yield Static("Skills")
-            yield Static("Personal skills live in ~/.codie/skills/<name>/SKILL.md")
+            yield Static(f"This workspace only: {self.folder}/<name>/SKILL.md")
             yield OptionList(*labels, id="choices")
             yield RichLog(id="skill-body", wrap=True, markup=False, min_width=20)
             with Horizontal(id="buttons"):

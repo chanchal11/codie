@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from codie.guards import cap_output, check_path, is_secret_name
-from codie.store import skills_dir
 
 CATALOG_LIMIT = 4_000
 
@@ -19,17 +18,21 @@ class Skill:
     path: Path
 
 
+def workspace_skills_dir(workspace: Path) -> Path:
+    """Skills for this folder only. They are not stored under the home directory."""
+    return Path(workspace).resolve() / ".codie" / "skills"
+
+
 def discover_skills(workspace: Path) -> list[Skill]:
-    """Personal skills first, then workspace skills. The workspace copy wins on a name clash."""
+    """SKILL.md files inside this workspace. A skill in another folder is invisible."""
+    root = Path(workspace).resolve()
     found: dict[str, Skill] = {}
-    for path in _iter_skill_files(skills_dir()):
-        skill = _load_skill(path, fallback_name=path.parent.name)
-        if skill:
-            found[skill.name] = skill
-    workspace_root = Path(workspace).resolve() / ".codie" / "skills"
-    for path in _iter_skill_files(workspace_root):
-        relative = path.relative_to(Path(workspace).resolve())
-        if check_path(Path(workspace).resolve(), relative.as_posix()):
+    for path in _iter_skill_files(workspace_skills_dir(root)):
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if check_path(root, relative.as_posix()):
             continue
         skill = _load_skill(path, fallback_name=path.parent.name)
         if skill:

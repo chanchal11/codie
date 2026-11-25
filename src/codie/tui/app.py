@@ -19,7 +19,7 @@ from codie.permissions import PermissionSet, remember_request
 from codie.providers import DEFAULT_OLLAMA_MODEL, bedrock_model_id, build_chat_model, list_ollama_models
 from codie.search import active_provider, provider_label, searxng_base_url
 from codie.sessions import SessionRecorder, list_sessions, load_session as read_session
-from codie.skills import discover_skills
+from codie.skills import discover_skills, workspace_skills_dir
 from codie.store import delete_guideline, guideline_lines, load_config, load_mcp, save_config, save_mcp
 from codie.tui.screens import (
     ApprovalModal,
@@ -363,11 +363,12 @@ class CodieApp(App):
         if self._busy:
             return
         skills = discover_skills(self.workspace)
+        folder = workspace_skills_dir(self.workspace).relative_to(self.workspace).as_posix()
         if not skills:
-            self.write_chat("No skills yet. Add SKILL.md under ~/.codie/skills/<name>/ or .codie/skills/<name>/.")
+            self.write_chat(f"No skills yet. Add SKILL.md under {folder}/<name>/ in this workspace.")
             return
         rows = [(skill.name, skill.description, skill.body) for skill in skills]
-        self.push_screen(SkillsModal(rows), self._refocus)
+        self.push_screen(SkillsModal(rows, folder), self._refocus)
 
     def action_allow(self) -> None:
         if self._busy:

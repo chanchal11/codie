@@ -24,7 +24,7 @@ DEFAULT_PERMISSIONS: dict = {"rules": []}
 
 
 def codie_home() -> Path:
-    """Home directory for config, sessions, and skills.
+    """Home directory for config and sessions.
 
     ``CODIE_HOME`` overrides the path so tests never touch a real account.
     """
@@ -149,12 +149,6 @@ def workspace_dir(workspace: Path) -> Path:
 
 def conversations_dir(workspace: Path) -> Path:
     root = codie_home() / "conversations" / workspace_key(workspace)
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def skills_dir() -> Path:
-    root = codie_home() / "skills"
     root.mkdir(parents=True, exist_ok=True)
     return root
 

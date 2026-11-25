@@ -31,7 +31,7 @@ Guards live in `src/codie/guards.py` and return `error: ...` text. They do not r
 - `conversations/<workspace key>/` is one JSON file per conversation: title, mode, model, and the message list.
 - `workspaces/<workspace key>/guidelines.md` holds preferences the user asked the agent to remember. Each line is approved before it is appended, then included in the system prompt.
 - `workspaces/<workspace key>/permissions.json` holds always-allow rules. A rule skips the prompt only. Guards still run, and a rule cannot name a secret path or a command other than `pytest`.
-- `skills/<name>/SKILL.md` is a personal skill. A workspace may also ship `.codie/skills/<name>/SKILL.md`, which wins on the same name. The prompt lists the description. `read_skill` loads the body.
+- Skills are not stored here. Each workspace keeps its own in `<workspace>/.codie/skills/<name>/SKILL.md`. The prompt lists the description. `read_skill` loads the body. A skill from another folder is not visible.
 
 The workspace key is a hash of the resolved folder path. `AGENTS.md` and `.codie/GUIDELINES.md` inside the workspace are read-only project instructions. `save_guideline` does not edit them.
 

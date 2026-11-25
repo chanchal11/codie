@@ -101,7 +101,10 @@ def _memory_text(workspace: Path) -> str:
         parts.append("Project instructions (read-only; do not edit these through save_guideline):\n" + project)
     catalog = catalog_text(workspace)
     if catalog:
-        parts.append("Skills (call read_skill with the name to load the steps):\n" + catalog)
+        parts.append(
+            "Skills for this workspace live in .codie/skills/<name>/SKILL.md. "
+            "Call read_skill with the name to load the steps:\n" + catalog
+        )
     else:
-        parts.append("No skills are installed.")
+        parts.append("No skills are installed in .codie/skills/ for this workspace.")
     return "\n\n".join(parts)
