@@ -4,7 +4,7 @@
 
 A turn is a LangGraph graph, not a single chat completion.
 
-1. The agent node sends the system prompt plus the message list to the chat model. The prompt is sent on every call. Ollama and Bedrock do not keep it for us.
+1. The agent node sends the system prompt plus the message list to the chat model. The prompt is sent on every call. Ollama, Groq, and Bedrock do not keep it for us.
 2. If the model returns plain text, the turn ends.
 3. If it returns tool calls, every call is answered with a `ToolMessage` that has the same id. Several calls in one reply are all run before the model is asked again.
 4. Writes, edits, `pytest`, MCP calls, saved guidelines, and a switch from plan to agent pause the graph with `interrupt()` before they run. The CLI or the Textual modal resumes with yes, always, or no. An always-allow rule stored for this workspace skips the pause. The tools node then runs once, so a command is not executed twice.

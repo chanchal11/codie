@@ -28,6 +28,7 @@ def test_unset_provider_is_ddgs():
 
 
 def test_searxng_reads_the_json_results(monkeypatch):
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
     save_config({"search_provider": "searxng", "searxng_url": "http://search.local"})
 
     def fake_urlopen(request, timeout=20):

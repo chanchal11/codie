@@ -252,6 +252,16 @@ async def test_always_allow_from_the_modal(tmp_path: Path):
     assert any("Always allowed" in line for line in app.transcript)
 
 
+async def test_provider_groq_without_api_key_is_an_error(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    app = _app(tmp_path, ScriptedModel([]))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press(*"/provider groq", "enter")
+        await pilot.pause()
+        assert any("GROQ_API_KEY" in line for line in app.transcript)
+        assert app.provider == "ollama"
+
+
 async def test_provider_bedrock_without_config_is_an_error(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("BEDROCK_MODEL_ID", raising=False)
     app = _app(tmp_path, ScriptedModel([]))

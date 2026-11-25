@@ -16,7 +16,15 @@ from codie.agent import CodingAgent, message_text, visible_text
 from codie.approvals import ApprovalRequest
 from codie.guards import MAX_ROUNDS_DEFAULT, command_program
 from codie.permissions import PermissionSet, remember_request
-from codie.providers import DEFAULT_OLLAMA_MODEL, bedrock_model_id, build_chat_model, list_ollama_models
+from codie.providers import (
+    CHAT_PROVIDERS,
+    DEFAULT_OLLAMA_MODEL,
+    bedrock_model_id,
+    build_chat_model,
+    groq_model_name,
+    list_groq_models,
+    list_ollama_models,
+)
 from codie.search import active_provider, provider_label, searxng_base_url
 from codie.sessions import SessionRecorder, list_sessions, load_session as read_session
 from codie.skills import discover_skills, workspace_skills_dir
@@ -38,7 +46,7 @@ from codie.tui.screens import (
 )
 
 HELP = (
-    "Commands: /mode [plan|agent], /model, /provider ollama|bedrock, /theme [name], "
+    "Commands: /mode [plan|agent], /model, /provider ollama|groq|bedrock, /theme [name], "
     "/search [ddgs|searxng|tavily|openai], "
     "/sessions, /mcp, /skills, /allow, /guidelines, /new, /exit. "
     "Stop ends the turn that is running."
@@ -329,7 +337,7 @@ class CodieApp(App):
         if text == "/provider" or text.startswith("/provider "):
             name = text[len("/provider") :].strip()
             if not name:
-                self.write_chat("Usage: /provider ollama   or   /provider bedrock")
+                self.write_chat("Usage: /provider ollama, /provider groq, or /provider bedrock")
                 return
             self.switch_provider(name)
             return
@@ -455,6 +463,7 @@ class CodieApp(App):
 
     def model_choices(self) -> list[tuple[str, str]]:
         choices = [("ollama", name) for name in list_ollama_models()]
+        choices.extend(("groq", name) for name in list_groq_models())
         bedrock = bedrock_model_id()
         if bedrock:
             choices.append(("bedrock", bedrock))
@@ -513,21 +522,23 @@ class CodieApp(App):
 
     def switch_model_text(self, text: str) -> None:
         parts = text.split(maxsplit=1)
-        if len(parts) == 2 and parts[0] in {"ollama", "bedrock"}:
+        if len(parts) == 2 and parts[0] in CHAT_PROVIDERS:
             self.apply_model(parts[0], parts[1])
             return
         self.apply_model(self.provider, text)
 
     def switch_provider(self, provider: str) -> None:
         provider = provider.strip().lower()
-        if provider not in {"ollama", "bedrock"}:
-            self.write_chat("error: provider must be ollama or bedrock")
+        if provider not in CHAT_PROVIDERS:
+            self.write_chat("error: provider must be ollama, groq, or bedrock")
             return
         if provider == "bedrock":
             model_name = bedrock_model_id()
             if not model_name:
                 self.write_chat("error: set BEDROCK_MODEL_ID or /model bedrock <model-id>")
                 return
+        elif provider == "groq":
+            model_name = groq_model_name()
         elif self.provider == "ollama":
             model_name = self.model_name
         else:
@@ -808,6 +819,8 @@ def _model_label(provider: str, model) -> str:
             return str(label)
     if provider == "bedrock":
         return bedrock_model_id() or "bedrock"
+    if provider == "groq":
+        return groq_model_name()
     return DEFAULT_OLLAMA_MODEL
 
 

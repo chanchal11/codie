@@ -1,4 +1,4 @@
-"""Chat models for local Ollama and Amazon Bedrock."""
+"""Chat models for local Ollama, Groq, and Amazon Bedrock."""
 
 from __future__ import annotations
 
@@ -7,6 +7,12 @@ import os
 import urllib.request
 
 DEFAULT_OLLAMA_MODEL = "qwen2.5-coder"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODELS = (
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+)
+CHAT_PROVIDERS = ("ollama", "groq", "bedrock")
 
 
 def build_chat_model(provider: str, model: str | None = None):
@@ -21,6 +27,14 @@ def build_chat_model(provider: str, model: str | None = None):
         if host:
             kwargs["base_url"] = host
         return ChatOllama(**kwargs)
+    if name == "groq":
+        from langchain_groq import ChatGroq
+
+        key = (os.getenv("GROQ_API_KEY") or "").strip()
+        if not key:
+            raise RuntimeError("Set GROQ_API_KEY in .env or the environment for the Groq provider.")
+        chosen = model or groq_model_name()
+        return ChatGroq(model=chosen, temperature=0, api_key=key)
     if name == "bedrock":
         from langchain_aws import ChatBedrockConverse
 
@@ -29,7 +43,8 @@ def build_chat_model(provider: str, model: str | None = None):
             raise RuntimeError("Set BEDROCK_MODEL_ID or pass --model for the Bedrock provider.")
         region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
         return ChatBedrockConverse(model=chosen, region_name=region, temperature=0)
-    raise RuntimeError(f"Unknown provider {provider!r}. Use 'ollama' or 'bedrock'.")
+    names = ", ".join(repr(item) for item in CHAT_PROVIDERS)
+    raise RuntimeError(f"Unknown provider {provider!r}. Use {names}.")
 
 
 def list_ollama_models(host: str | None = None) -> list[str]:
@@ -53,3 +68,19 @@ def bedrock_model_id() -> str | None:
     if value and value.strip():
         return value.strip()
     return None
+
+
+def groq_model_name() -> str:
+    """Model id from GROQ_MODEL, otherwise the free-tier default."""
+    value = os.getenv("GROQ_MODEL")
+    if value and value.strip():
+        return value.strip()
+    return DEFAULT_GROQ_MODEL
+
+
+def list_groq_models() -> list[str]:
+    """Free-tier chat models, with GROQ_MODEL first when it is something else."""
+    chosen = groq_model_name()
+    names = [chosen] if chosen not in GROQ_MODELS else []
+    names.extend(GROQ_MODELS)
+    return names

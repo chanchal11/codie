@@ -5,7 +5,13 @@ import json
 
 import pytest
 
-from codie.providers import bedrock_model_id, build_chat_model, list_ollama_models
+from codie.providers import (
+    DEFAULT_GROQ_MODEL,
+    bedrock_model_id,
+    build_chat_model,
+    list_groq_models,
+    list_ollama_models,
+)
 
 
 def test_ollama_uses_the_requested_model(monkeypatch):
@@ -35,6 +41,39 @@ def test_bedrock_constructs_from_env(monkeypatch):
     model = build_chat_model("bedrock", None)
     assert model.model_id == "anthropic.claude-3-5-sonnet-20241022-v2:0"
     assert bedrock_model_id() == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+
+def test_groq_requires_an_api_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        build_chat_model("groq", "openai/gpt-oss-20b")
+
+
+def test_groq_uses_the_requested_model(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    model = build_chat_model("groq", "openai/gpt-oss-20b")
+    assert model.model_name == "openai/gpt-oss-20b"
+    assert model.groq_api_key.get_secret_value() == "test-key"
+
+
+def test_groq_model_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    model = build_chat_model("groq", None)
+    assert model.model_name == "openai/gpt-oss-20b"
+
+
+def test_groq_defaults_when_model_unset(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+    model = build_chat_model("groq", None)
+    assert model.model_name == DEFAULT_GROQ_MODEL
+
+
+def test_list_groq_models_puts_a_custom_env_model_first(monkeypatch):
+    monkeypatch.setenv("GROQ_MODEL", "custom/model")
+    assert list_groq_models()[0] == "custom/model"
+    assert "openai/gpt-oss-120b" in list_groq_models()
 
 
 def test_unknown_provider():

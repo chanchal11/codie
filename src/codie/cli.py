@@ -11,17 +11,17 @@ from dotenv import load_dotenv
 from codie.agent import CodingAgent
 from codie.approvals import CliApprover, CliSink
 from codie.guards import MAX_ROUNDS_DEFAULT
-from codie.providers import build_chat_model
+from codie.providers import CHAT_PROVIDERS, DEFAULT_GROQ_MODEL, DEFAULT_OLLAMA_MODEL, build_chat_model
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="codie",
-        description="Coding agent for one folder. Ollama by default, Bedrock optional.",
+        description="Coding agent for one folder. Ollama by default, Groq and Bedrock optional.",
     )
     parser.add_argument("--workspace", default=".", help="Folder the agent may read and edit")
-    parser.add_argument("--provider", default="ollama", choices=["ollama", "bedrock"])
-    parser.add_argument("--model", default=None, help="Model name or Bedrock model id")
+    parser.add_argument("--provider", default="ollama", choices=list(CHAT_PROVIDERS))
+    parser.add_argument("--model", default=None, help="Model name, Groq model id, or Bedrock model id")
     parser.add_argument("--max-rounds", type=int, default=MAX_ROUNDS_DEFAULT)
     parser.add_argument("prompt", nargs="*", help="One-off question. Omit this to open the TUI.")
     return parser.parse_args(argv)
@@ -83,4 +83,8 @@ def _model_label(provider: str, model) -> str:
     label = getattr(model, "model", None) or getattr(model, "model_id", None)
     if label:
         return str(label)
-    return "bedrock" if provider == "bedrock" else "qwen2.5-coder"
+    if provider == "bedrock":
+        return "bedrock"
+    if provider == "groq":
+        return DEFAULT_GROQ_MODEL
+    return DEFAULT_OLLAMA_MODEL
